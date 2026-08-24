@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.8.5
+// @version      1.8.6
 // @description  页面角落一个小圆点，显示当前网页命中的 Mihomo 规则与实时流量
 // @author       droidzx
 // @match        *://*/*
@@ -51,7 +51,7 @@
   const sourceVotes = new Map();
   let staleCount = 0;
 
-  let root, dot, panel, statusEl, listEl, countEl, titleEl, pinEl;
+  let root, dot, panel, statusEl, listEl, countEl, upSpeedEl, downSpeedEl, pinEl;
 
   /* ---------- 工具 ---------- */
 
@@ -226,7 +226,7 @@
 
     const busy = totalUpDelta + totalDownDelta > 0;
     setDotState(connected ? (busy ? 'active' : 'connected') : 'error');
-    if (countEl) countEl.textContent = String(groups.size);
+    if (countEl) countEl.textContent = `${groups.size} 组`;
     if (dot) {
       dot.title = connected
         ? `Mihomo · ${groups.size} 条规则 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
@@ -243,9 +243,8 @@
         statusEl.dataset.state = 'error';
       }
     }
-    if (titleEl) {
-      titleEl.textContent = `↑ ${formatBytes(totalUpDelta / (elapsed || 1))}/s   ↓ ${formatBytes(totalDownDelta / (elapsed || 1))}/s`;
-    }
+    if (upSpeedEl) upSpeedEl.textContent = `${formatBytes(totalUpDelta / (elapsed || 1))}/s`;
+    if (downSpeedEl) downSpeedEl.textContent = `${formatBytes(totalDownDelta / (elapsed || 1))}/s`;
 
     const cmp = (a, b) => a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
     const sorted = [...groups.values()].sort((a, b) => (
@@ -445,60 +444,81 @@
     const style = el('style');
     style.textContent = `
       :host { all: initial; position: fixed; right: 16px; bottom: 16px; z-index: 2147483646; }
-      .wrap { position: relative; font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .wrap { position: relative; font: 12px/1.45 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       .dot { width: 12px; height: 12px; border-radius: 50%; cursor: pointer; background: #64748b;
-        box-shadow: 0 0 0 3px rgba(15,23,42,.28), 0 2px 6px rgba(0,0,0,.3);
-        transition: background .2s ease, transform .15s ease; }
-      .dot:hover { transform: scale(1.35); }
-      .dot[data-state="connected"] { background: #4ade80; }
-      .dot[data-state="active"] { background: #38bdf8; animation: pulse 1.1s ease-in-out infinite; }
-      .dot[data-state="error"] { background: #f87171; }
+        border: 2px solid rgba(255,255,255,.9); box-sizing: border-box;
+        box-shadow: 0 0 0 3px rgba(15,23,42,.42), 0 3px 10px rgba(0,0,0,.35);
+        transition: background .2s ease, transform .15s ease, box-shadow .2s ease; }
+      .dot:hover { transform: scale(1.3); }
+      .dot[data-state="connected"] { background: #3ddc97; }
+      .dot[data-state="active"] { background: #42d3a4; animation: pulse 1.1s ease-in-out infinite; }
+      .dot[data-state="error"] { background: #fb7185; }
       @keyframes pulse {
-        0%, 100% { box-shadow: 0 0 0 3px rgba(15,23,42,.28), 0 0 6px 2px rgba(56,189,248,.85); }
-        50% { box-shadow: 0 0 0 3px rgba(15,23,42,.28), 0 0 12px 5px rgba(56,189,248,.35); }
+        0%, 100% { box-shadow: 0 0 0 3px rgba(15,23,42,.42), 0 0 7px 2px rgba(61,220,151,.75); }
+        50% { box-shadow: 0 0 0 3px rgba(15,23,42,.42), 0 0 14px 6px rgba(61,220,151,.28); }
       }
-      .panel { position: absolute; right: 0; bottom: 22px; width: 340px; max-width: calc(100vw - 32px);
-        color: #e5edf8; background: linear-gradient(160deg, rgba(15,23,42,.98), rgba(10,17,31,.97));
-        border: 1px solid rgba(125,211,252,.18); border-radius: 14px; overflow: hidden;
-        box-shadow: 0 18px 55px rgba(0,0,0,.45); backdrop-filter: blur(16px);
-        opacity: 0; visibility: hidden; transform: translateY(6px);
+      .panel { position: absolute; right: 0; bottom: 22px; width: 356px; max-width: calc(100vw - 24px);
+        color: #e8f0ec; background: #101914;
+        border: 1px solid rgba(148,196,174,.2); border-radius: 16px; overflow: hidden;
+        box-shadow: 0 24px 70px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.025) inset;
+        opacity: 0; visibility: hidden; transform: translateY(7px) scale(.985); transform-origin: bottom right;
         transition: opacity .16s ease, transform .16s ease, visibility .16s; }
       .panel.open { opacity: 1; visibility: visible; transform: translateY(0); }
       .panel.to-right { right: auto; left: 0; }
       .panel.to-bottom { bottom: auto; top: 22px; }
-      .head { display: flex; align-items: center; gap: 8px; padding: 9px 11px;
-        background: rgba(30,41,59,.62); border-bottom: 1px solid rgba(148,163,184,.12); }
-      .head .t { flex: 1; font-weight: 700; color: #f1f5f9; font-variant-numeric: tabular-nums; }
-      .badge { padding: 2px 7px; border-radius: 999px; background: rgba(56,189,248,.12); color: #7dd3fc; }
-      .pin { border: 1px solid rgba(148,163,184,.16); border-radius: 7px; padding: 3px 7px;
-        background: rgba(51,65,85,.62); color: #cbd5e1; cursor: pointer; font: inherit; }
-      .pin:hover { background: #475569; color: #fff; }
-      .pin.on { color: #bae6fd; background: rgba(14,165,233,.2); border-color: rgba(56,189,248,.35); }
-      .status { padding: 6px 11px; color: #86efac; background: rgba(15,23,42,.42);
-        border-bottom: 1px solid rgba(148,163,184,.09); font-size: 11px; }
+      .panel.to-right { transform-origin: bottom left; }
+      .head { padding: 12px; background: linear-gradient(145deg, #16271e, #122019);
+        border-bottom: 1px solid rgba(148,196,174,.13); }
+      .topline { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+      .brand { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1;
+        color: #f3faf6; font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+      .brand-mark { width: 7px; height: 7px; border-radius: 50%; background: #3ddc97;
+        box-shadow: 0 0 9px rgba(61,220,151,.72); }
+      .badge { padding: 2px 7px; border-radius: 999px; background: rgba(61,220,151,.1);
+        color: #8ce9bd; font-size: 10.5px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+      .pin { border: 1px solid rgba(148,196,174,.18); border-radius: 8px; padding: 4px 8px;
+        background: rgba(255,255,255,.045); color: #91a99d; cursor: pointer; font: inherit; font-size: 11px; }
+      .pin:hover { background: rgba(255,255,255,.09); color: #f4fbf7; }
+      .pin.on { color: #b6f4d4; background: rgba(61,220,151,.13); border-color: rgba(61,220,151,.35); }
+      .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .metric { min-width: 0; padding: 8px 10px; border: 1px solid rgba(148,196,174,.11);
+        border-radius: 10px; background: rgba(5,13,9,.32); }
+      .metric-label { display: block; margin-bottom: 2px; color: #769184; font-size: 10px; }
+      .metric-value { display: block; overflow: hidden; color: #f2f8f5; font-size: 15px; line-height: 1.25;
+        font-weight: 720; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+      .metric.down .metric-value { color: #72e5aa; }
+      .status { padding: 7px 12px; color: #86efac; background: rgba(11,25,17,.92);
+        border-bottom: 1px solid rgba(148,196,174,.1); font-size: 11px; }
       .status[data-state="ok"] { display: none; }
-      .status[data-state="error"] { color: #fca5a5; }
-      .list { max-height: min(46vh, 440px); overflow: auto; padding: 7px; }
-      .grp { margin-bottom: 6px; border: 1px solid rgba(148,163,184,.12); border-radius: 10px;
-        background: rgba(30,41,59,.42); overflow: hidden; }
+      .status[data-state="error"] { color: #fda4af; background: rgba(76,20,31,.35); }
+      .list { max-height: min(48vh, 470px); overflow: auto; padding: 8px; background: #0d1511; }
+      .grp { position: relative; margin-bottom: 7px; border: 1px solid rgba(148,196,174,.1); border-radius: 11px;
+        background: #121d17; overflow: hidden; }
       .grp:last-child { margin-bottom: 0; }
-      .grp.hot { border-color: rgba(56,189,248,.3); }
-      .grp-head { display: flex; align-items: center; gap: 8px; padding: 7px 9px; }
+      .grp::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: #426354; }
+      .grp.hot { border-color: rgba(61,220,151,.28); background: #14231b; }
+      .grp.hot::before { background: #3ddc97; box-shadow: 0 0 9px rgba(61,220,151,.5); }
+      .grp-head { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 10px 7px 12px; }
       .grp-info { min-width: 0; flex: 1; }
-      .rule { color: #fdba74; font-weight: 700; overflow-wrap: anywhere; }
-      .sub { color: #64748b; font-size: 10.5px; }
-      .hot-tag { color: #7dd3fc; font-size: 11px; white-space: nowrap; }
-      .hosts { border-top: 1px solid rgba(148,163,184,.09); background: rgba(2,6,23,.16); }
+      .rule { color: #f1f7f3; font-weight: 680; overflow-wrap: anywhere; }
+      .sub { margin-top: 1px; color: #657d71; font-size: 10.5px; }
+      .hot-tag { padding: 2px 7px; border-radius: 999px; color: #78e8ae; background: rgba(61,220,151,.1);
+        font-size: 10px; white-space: nowrap; }
+      .hosts { border-top: 1px solid rgba(148,196,174,.08); background: rgba(4,10,7,.22); }
       .host-row { display: grid; grid-template-columns: 6px minmax(0,1fr) auto; align-items: center;
-        gap: 7px; padding: 4px 9px; border-bottom: 1px solid rgba(148,163,184,.07); }
+        gap: 8px; min-height: 27px; padding: 3px 10px 3px 12px; border-bottom: 1px solid rgba(148,196,174,.055); }
       .host-row:last-child { border-bottom: 0; }
-      .led { width: 6px; height: 6px; border-radius: 50%; background: #475569; }
-      .host-row.on .led { background: #38bdf8; box-shadow: 0 0 7px rgba(56,189,248,.9); }
-      .host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #bae6fd; }
-      .ht { color: #64748b; font-size: 10.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-      .empty { padding: 20px 8px; text-align: center; color: #94a3b8; }
-      ::-webkit-scrollbar { width: 6px; }
-      ::-webkit-scrollbar-thumb { background: #475569; border-radius: 6px; }
+      .led { width: 5px; height: 5px; border-radius: 50%; background: #3c5549; }
+      .host-row.on .led { background: #3ddc97; box-shadow: 0 0 7px rgba(61,220,151,.9); }
+      .host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c5d6cd; }
+      .host-row.on .host { color: #effaf4; }
+      .ht { min-width: 54px; padding: 2px 6px; border-radius: 6px; color: #7e978a; background: rgba(255,255,255,.035);
+        text-align: right; font-size: 10.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .host-row.on .ht { color: #9aebc2; background: rgba(61,220,151,.08); }
+      .empty { padding: 26px 8px; text-align: center; color: #70877b; }
+      ::-webkit-scrollbar { width: 5px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #354d41; border-radius: 6px; }
     `;
 
     const wrap = el('div', 'wrap');
@@ -508,12 +528,20 @@
 
     panel = el('div', 'panel');
     const head = el('div', 'head');
-    titleEl = el('div', 't', '—');
-    countEl = el('span', 'badge', '0');
+    const topline = el('div', 'topline');
+    const brand = el('div', 'brand');
+    brand.append(el('span', 'brand-mark'), el('span', '', 'Mihomo'), countEl = el('span', 'badge', '0 组'));
     pinEl = el('button', 'pin', '固定');
     pinEl.type = 'button';
     pinEl.addEventListener('click', () => setPinned(!panel.classList.contains('pinned')));
-    head.append(titleEl, countEl, pinEl);
+    topline.append(brand, pinEl);
+    const metrics = el('div', 'metrics');
+    const upMetric = el('div', 'metric up');
+    upMetric.append(el('span', 'metric-label', '↑ 上传'), upSpeedEl = el('strong', 'metric-value', '0 B/s'));
+    const downMetric = el('div', 'metric down');
+    downMetric.append(el('span', 'metric-label', '↓ 下载'), downSpeedEl = el('strong', 'metric-value', '0 B/s'));
+    metrics.append(upMetric, downMetric);
+    head.append(topline, metrics);
     statusEl = el('div', 'status', '正在连接…');
     listEl = el('div', 'list');
     listEl.appendChild(el('div', 'empty', '等待本页产生网络请求…'));
