@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         公司 Mihomo 当前页面规则
+// @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.8.3
+// @version      1.8.4
 // @description  页面角落一个小圆点，显示当前网页命中的 Mihomo 规则与实时流量
 // @author       droidzx
 // @match        *://*/*
@@ -51,7 +51,7 @@
   const sourceVotes = new Map();
   let staleCount = 0;
 
-  let root, dot, panel, statusEl, listEl, countEl, titleEl;
+  let root, dot, panel, statusEl, listEl, countEl, titleEl, pinEl;
 
   /* ---------- 工具 ---------- */
 
@@ -407,6 +407,16 @@
     if (on) { refreshFromCache(); restart(); }
   }
 
+  function setPinned(on, save = true) {
+    panel.classList.toggle('pinned', on);
+    pinEl.classList.toggle('on', on);
+    pinEl.textContent = on ? '已固定' : '固定';
+    pinEl.title = on ? '取消固定，移出面板后自动收起' : '固定面板，保持展开';
+    pinEl.setAttribute('aria-pressed', String(on));
+    if (save) GM_setValue(KEYS.pinned, on);
+    if (on) setExpanded(true);
+  }
+
   function enableDrag() {
     dot.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
@@ -426,11 +436,7 @@
       const up = () => {
         dot.removeEventListener('pointermove', move);
         dot.removeEventListener('pointerup', up);
-        if (moved) { savePosition(); return; }
-        const pinned = !panel.classList.contains('pinned');
-        panel.classList.toggle('pinned', pinned);
-        GM_setValue(KEYS.pinned, pinned);
-        setExpanded(pinned);
+        if (moved) savePosition();
       };
       dot.addEventListener('pointermove', move);
       dot.addEventListener('pointerup', up);
@@ -470,6 +476,10 @@
         background: rgba(30,41,59,.62); border-bottom: 1px solid rgba(148,163,184,.12); }
       .head .t { flex: 1; font-weight: 700; color: #f1f5f9; font-variant-numeric: tabular-nums; }
       .badge { padding: 2px 7px; border-radius: 999px; background: rgba(56,189,248,.12); color: #7dd3fc; }
+      .pin { border: 1px solid rgba(148,163,184,.16); border-radius: 7px; padding: 3px 7px;
+        background: rgba(51,65,85,.62); color: #cbd5e1; cursor: pointer; font: inherit; }
+      .pin:hover { background: #475569; color: #fff; }
+      .pin.on { color: #bae6fd; background: rgba(14,165,233,.2); border-color: rgba(56,189,248,.35); }
       .status { padding: 6px 11px; color: #86efac; background: rgba(15,23,42,.42);
         border-bottom: 1px solid rgba(148,163,184,.09); font-size: 11px; }
       .status[data-state="ok"] { display: none; }
@@ -507,13 +517,16 @@
     const head = el('div', 'head');
     titleEl = el('div', 't', '—');
     countEl = el('span', 'badge', '0');
-    head.append(titleEl, countEl);
+    pinEl = el('button', 'pin', '固定');
+    pinEl.type = 'button';
+    pinEl.addEventListener('click', () => setPinned(!panel.classList.contains('pinned')));
+    head.append(titleEl, countEl, pinEl);
     statusEl = el('div', 'status', '正在连接…');
     listEl = el('div', 'list');
     listEl.appendChild(el('div', 'empty', '等待本页产生网络请求…'));
     panel.append(head, statusEl, listEl);
 
-    // 悬停展开，点一下固定
+    // 悬停展开，标题栏按钮负责固定
     dot.addEventListener('mouseenter', () => {
       clearTimeout(hoverCloseTimer);
       setExpanded(true);
@@ -533,10 +546,7 @@
 
     enableDrag();
     restorePosition();
-    if (GM_getValue(KEYS.pinned, false)) {
-      panel.classList.add('pinned');
-      setExpanded(true);
-    }
+    setPinned(Boolean(GM_getValue(KEYS.pinned, false)), false);
   }
 
   /* ---------- 启动 ---------- */
