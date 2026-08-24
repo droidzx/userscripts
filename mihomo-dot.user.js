@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         公司 Mihomo 当前页面规则
 // @namespace    local.droidzx.mihomo
-// @version      1.8.1
+// @version      1.8.2
 // @description  页面角落一个小圆点，显示当前网页命中的 Mihomo 规则与实时流量
 // @author       droidzx
 // @match        *://*/*
@@ -10,7 +10,6 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_unregisterMenuCommand
 // @grant        GM_xmlhttpRequest
 // @connect      192.168.1.50
 // @downloadURL  https://raw.githubusercontent.com/droidzx/userscripts/main/mihomo-dot.user.js
@@ -48,7 +47,7 @@
   let hoverCloseTimer = null;
 
   // /connections 是整个旁路由的全局连接表，不按 sourceIP 过滤会混进别的设备。
-  // 优先用手动设定值；否则由 learnSourceIP() 从本页域名的连接里投票选出本机 IP。
+  // 复用上次自动识别的值；失效后由 learnSourceIP() 从本页域名的连接里重新投票识别。
   let sourceIP = GM_getValue(KEYS.sourceIP, '') || '';
   const sourceVotes = new Map();
   let staleCount = 0;
@@ -241,10 +240,12 @@
     if (!expanded || !listEl) return;
 
     if (statusEl) {
-      statusEl.textContent = connected
-        ? `${sourceIP || '本机 IP 识别中'} · 本页域名 ${observedDomains.size} · 全局连接 ${connections.length}`
-        : `连接失败，${Math.round(retryDelay / 1000)} 秒后重试`;
-      statusEl.dataset.state = connected ? 'ok' : 'error';
+      if (connected) {
+        statusEl.dataset.state = 'ok';
+      } else {
+        statusEl.textContent = `连接失败，${Math.round(retryDelay / 1000)} 秒后重试`;
+        statusEl.dataset.state = 'error';
+      }
     }
     if (titleEl) {
       titleEl.textContent = busy
@@ -260,7 +261,7 @@
 
     if (!sorted.length) {
       listEl.replaceChildren(el('div', 'empty',
-        connected ? `本页 ${observedDomains.size} 个域名暂无活动连接` : '等待连接 Mihomo…'));
+        connected ? '本页暂无活动连接' : '等待连接 Mihomo…'));
       listEl.scrollTop = scroll;
       return;
     }
@@ -472,6 +473,7 @@
       .badge { padding: 2px 7px; border-radius: 999px; background: rgba(56,189,248,.12); color: #7dd3fc; }
       .status { padding: 6px 11px; color: #86efac; background: rgba(15,23,42,.42);
         border-bottom: 1px solid rgba(148,163,184,.09); font-size: 11px; }
+      .status[data-state="ok"] { display: none; }
       .status[data-state="error"] { color: #fca5a5; }
       .list { max-height: min(46vh, 440px); overflow: auto; padding: 7px; }
       .grp { margin-bottom: 6px; border: 1px solid rgba(148,163,184,.12); border-radius: 10px;
@@ -495,14 +497,6 @@
       .empty { padding: 20px 8px; text-align: center; color: #94a3b8; }
       ::-webkit-scrollbar { width: 6px; }
       ::-webkit-scrollbar-thumb { background: #475569; border-radius: 6px; }
-      .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 7px 11px;
-        border-top: 1px solid rgba(148,163,184,.12); background: rgba(2,6,23,.28);
-        color: #64748b; font-size: 10.5px; }
-      .lg-item { display: inline-flex; align-items: center; gap: 5px; }
-      .lg-dot { width: 7px; height: 7px; border-radius: 50%; background: #64748b; }
-      .lg-dot[data-state="connected"] { background: #4ade80; }
-      .lg-dot[data-state="active"] { background: #38bdf8; }
-      .lg-dot[data-state="error"] { background: #f87171; }
     `;
 
     const wrap = el('div', 'wrap');
@@ -517,22 +511,8 @@
     head.append(titleEl, countEl);
     statusEl = el('div', 'status', '正在连接…');
     listEl = el('div', 'list');
-    // 圆点颜色的含义，否则只有写脚本的人知道绿的蓝的是什么
-    const legend = el('div', 'legend');
-    for (const [state, text] of [
-      ['connected', '已连接'],
-      ['active', '传输中'],
-      ['error', '连不上'],
-      ['idle', '待机'],
-    ]) {
-      const item = el('span', 'lg-item');
-      const swatch = el('span', 'lg-dot');
-      swatch.dataset.state = state;
-      item.append(swatch, el('span', undefined, text));
-      legend.appendChild(item);
-    }
     listEl.appendChild(el('div', 'empty', '等待本页产生网络请求…'));
-    panel.append(head, statusEl, listEl, legend);
+    panel.append(head, statusEl, listEl);
 
     // 悬停展开，点一下固定
     dot.addEventListener('mouseenter', () => {
@@ -560,27 +540,15 @@
     }
   }
 
-  // 菜单标签要反映当前状态，否则「显示 / 隐藏」这种写死的标签看不出点了会发生什么。
-  // Tampermonkey 的标签是静态的，只能注销后重新注册。
-  const menuIds = [];
-
   function registerMenus() {
-    if (typeof GM_unregisterMenuCommand === 'function') {
-      for (const id of menuIds.splice(0)) {
-        try { GM_unregisterMenuCommand(id); } catch (_) { /* 旧版可能不支持 */ }
-      }
-    }
-    menuIds.push(GM_registerMenuCommand('立即重新连接', restart));
-    menuIds.push(GM_registerMenuCommand(`设定本机 IP（当前 ${sourceIP || '自动识别'}）`, () => {
-      const v = prompt('只显示这个来源 IP 的连接，留空则自动识别：', sourceIP || '');
-      if (v === null) return;
-      sourceIP = v.trim();
+    GM_registerMenuCommand('立即重新连接', restart);
+    GM_registerMenuCommand('重新识别本机设备', () => {
+      sourceIP = '';
       sourceVotes.clear();
       staleCount = 0;
-      GM_setValue(KEYS.sourceIP, sourceIP);
-      registerMenus();
-      refreshFromCache();
-    }));
+      GM_setValue(KEYS.sourceIP, '');
+      restart();
+    });
   }
 
 
