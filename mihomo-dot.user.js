@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.8.6
-// @description  页面角落一个小圆点，显示当前网页命中的 Mihomo 规则与实时流量
+// @version      1.8.7
+// @description  页面角落一个小圆点，显示当前网页的全部域名、Mihomo 规则与实时流量
 // @author       droidzx
 // @match        *://*/*
 // @run-at       document-idle
@@ -42,6 +42,7 @@
   let currentPageUrl = location.href;
   let previousTraffic = new Map();
   let previousTrafficAt = 0;
+  let knownRoutes = new Map();
   let expanded = false;
   let hoverCloseTimer = null;
 
@@ -171,7 +172,7 @@
   /* ---------- 渲染 ---------- */
 
   function refreshFromCache() {
-    if (!listEl || !latestConnections.length) return;
+    if (!listEl) return;
     render(latestConnections, false);
   }
 
@@ -184,8 +185,19 @@
     const elapsed = previousTrafficAt ? Math.max((now - previousTrafficAt) / 1000, 0.1) : 0;
     const nextTraffic = new Map();
     const groups = new Map();
+    const activeHosts = new Set();
     let totalUpDelta = 0;
     let totalDownDelta = 0;
+
+    const getGroup = (rule, payload, chain, unmatched = false) => {
+      const gk = `${rule}|${payload}`;
+      let g = groups.get(gk);
+      if (!g) {
+        g = { rule, payload, chain, unmatched, upDelta: 0, downDelta: 0, hosts: new Map() };
+        groups.set(gk, g);
+      }
+      return g;
+    };
 
     for (const c of connections) {
       const m = c.metadata || {};
@@ -201,12 +213,9 @@
       const rule = c.rule || '未知规则';
       const payload = c.rulePayload || '';
       const chain = Array.isArray(c.chains) && c.chains.length ? c.chains[0] : '';
-      const gk = `${rule}|${payload}`;
-      let g = groups.get(gk);
-      if (!g) {
-        g = { rule, payload, chain, upDelta: 0, downDelta: 0, hosts: new Map() };
-        groups.set(gk, g);
-      }
+      knownRoutes.set(host, { rule, payload, chain });
+      activeHosts.add(host);
+      const g = getGroup(rule, payload, chain);
       let h = g.hosts.get(host);
       if (!h) { h = { host, down: 0, delta: 0 }; g.hosts.set(host, h); }
       h.down += down;
@@ -222,14 +231,26 @@
       }
     }
 
+    // 浏览器看到、但 Mihomo 当前连接表里没有的域名仍要显示。
+    // 若本页早先识别过其规则，沿用该规则；否则只标记为未识别，避免误称为确定的 ROS 流量。
+    for (const host of observedDomains) {
+      if (!host || activeHosts.has(host)) continue;
+      const route = knownRoutes.get(host);
+      const g = route
+        ? getGroup(route.rule, route.payload, route.chain)
+        : getGroup('未识别到 Mihomo 规则', '', '通常由 ROS 直连，也可能来自缓存或已结束请求', true);
+      if (!g.hosts.has(host)) g.hosts.set(host, { host, down: null, delta: 0 });
+    }
+    const domainCount = new Set([...groups.values()].flatMap((g) => [...g.hosts.keys()])).size;
+
     if (measureSpeed) { previousTraffic = nextTraffic; previousTrafficAt = now; }
 
     const busy = totalUpDelta + totalDownDelta > 0;
     setDotState(connected ? (busy ? 'active' : 'connected') : 'error');
-    if (countEl) countEl.textContent = `${groups.size} 组`;
+    if (countEl) countEl.textContent = `${domainCount} 域名`;
     if (dot) {
       dot.title = connected
-        ? `Mihomo · ${groups.size} 条规则 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
+        ? `Mihomo · 本页 ${domainCount} 个域名 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
         : 'Mihomo 未连接';
     }
 
@@ -248,7 +269,8 @@
 
     const cmp = (a, b) => a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
     const sorted = [...groups.values()].sort((a, b) => (
-      cmp(a.payload || a.rule, b.payload || b.rule) || cmp(a.rule, b.rule)
+      Number(a.unmatched) - Number(b.unmatched)
+      || cmp(a.payload || a.rule, b.payload || b.rule) || cmp(a.rule, b.rule)
     ));
     const scroll = listEl.scrollTop;
 
@@ -261,7 +283,7 @@
 
     listEl.replaceChildren(...sorted.map((g) => {
       const hot = g.upDelta + g.downDelta > 0;
-      const item = el('section', hot ? 'grp hot' : 'grp');
+      const item = el('section', ['grp', hot ? 'hot' : '', g.unmatched ? 'unmatched' : ''].filter(Boolean).join(' '));
       const head = el('div', 'grp-head');
       const info = el('div', 'grp-info');
       info.appendChild(el('div', 'rule', g.payload || g.rule));
@@ -276,7 +298,7 @@
         const row = el('div', h.delta > 0 ? 'host-row on' : 'host-row');
         row.appendChild(el('span', 'led'));
         row.appendChild(el('span', 'host', h.host));
-        row.appendChild(el('span', 'ht', formatBytes(h.down)));
+        row.appendChild(el('span', h.down === null ? 'ht unknown' : 'ht', h.down === null ? '—' : formatBytes(h.down)));
         hosts.appendChild(row);
       }
       item.appendChild(hosts);
@@ -360,6 +382,7 @@
     currentPageUrl = location.href;
     // 换页必须清空，否则旧页面的第三方域名会一直被算进「本页」
     observedDomains = new Set([normalizeHost(location.hostname)]);
+    knownRoutes = new Map();
     previousTraffic = new Map();
     previousTrafficAt = 0;
     refreshFromCache();
@@ -498,6 +521,8 @@
       .grp::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: #426354; }
       .grp.hot { border-color: rgba(61,220,151,.28); background: #14231b; }
       .grp.hot::before { background: #3ddc97; box-shadow: 0 0 9px rgba(61,220,151,.5); }
+      .grp.unmatched::before { background: #725f3d; }
+      .grp.unmatched .rule { color: #d8c6a5; }
       .grp-head { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 10px 7px 12px; }
       .grp-info { min-width: 0; flex: 1; }
       .rule { color: #f1f7f3; font-weight: 680; overflow-wrap: anywhere; }
@@ -515,6 +540,7 @@
       .ht { min-width: 54px; padding: 2px 6px; border-radius: 6px; color: #7e978a; background: rgba(255,255,255,.035);
         text-align: right; font-size: 10.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
       .host-row.on .ht { color: #9aebc2; background: rgba(61,220,151,.08); }
+      .ht.unknown { color: #586c62; background: transparent; }
       .empty { padding: 26px 8px; text-align: center; color: #70877b; }
       ::-webkit-scrollbar { width: 5px; }
       ::-webkit-scrollbar-track { background: transparent; }
@@ -530,16 +556,16 @@
     const head = el('div', 'head');
     const topline = el('div', 'topline');
     const brand = el('div', 'brand');
-    brand.append(el('span', 'brand-mark'), el('span', '', 'Mihomo'), countEl = el('span', 'badge', '0 组'));
+    brand.append(el('span', 'brand-mark'), el('span', '', 'Mihomo'), countEl = el('span', 'badge', '1 域名'));
     pinEl = el('button', 'pin', '固定');
     pinEl.type = 'button';
     pinEl.addEventListener('click', () => setPinned(!panel.classList.contains('pinned')));
     topline.append(brand, pinEl);
     const metrics = el('div', 'metrics');
     const upMetric = el('div', 'metric up');
-    upMetric.append(el('span', 'metric-label', '↑ 上传'), upSpeedEl = el('strong', 'metric-value', '0 B/s'));
+    upMetric.append(el('span', 'metric-label', 'Mihomo ↑ 上传'), upSpeedEl = el('strong', 'metric-value', '0 B/s'));
     const downMetric = el('div', 'metric down');
-    downMetric.append(el('span', 'metric-label', '↓ 下载'), downSpeedEl = el('strong', 'metric-value', '0 B/s'));
+    downMetric.append(el('span', 'metric-label', 'Mihomo ↓ 下载'), downSpeedEl = el('strong', 'metric-value', '0 B/s'));
     metrics.append(upMetric, downMetric);
     head.append(topline, metrics);
     statusEl = el('div', 'status', '正在连接…');
@@ -574,6 +600,7 @@
 
   monitorPageRequests();
   buildUi();
+  refreshFromCache();
   restart();
 
   setInterval(checkPageChange, 700);
