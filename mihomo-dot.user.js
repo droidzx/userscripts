@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.8.8
+// @version      1.8.9
 // @description  页面角落一个小圆点，显示当前网页的全部域名、Mihomo 规则与实时流量
 // @author       droidzx
 // @match        *://*/*
@@ -52,7 +52,7 @@
   const sourceVotes = new Map();
   let staleCount = 0;
 
-  let root, dot, panel, statusEl, listEl, countEl, upSpeedEl, downSpeedEl, pinEl;
+  let root, dot, panel, statusEl, listEl, countEl, upSpeedEl, downSpeedEl, pinEl, brandMarkEl;
 
   /* ---------- 工具 ---------- */
 
@@ -247,10 +247,14 @@
 
     const busy = totalUpDelta + totalDownDelta > 0;
     setDotState(connected ? (busy ? 'active' : 'connected') : 'error');
+    if (brandMarkEl) {
+      brandMarkEl.classList.toggle('active', busy);
+      brandMarkEl.title = busy ? '绿色：正在传输' : '灰色：当前无流量';
+    }
     if (countEl) countEl.textContent = `${domainCount} 域名`;
     if (dot) {
       dot.title = connected
-        ? `${busy ? '闪动绿色：正在传输' : '绿色：Mihomo 已连接'}\n本页 ${domainCount} 个域名 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
+        ? `${busy ? '闪动绿色：正在传输' : '灰色：当前无流量'}\n本页 ${domainCount} 个域名 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
         : '红色：Mihomo 连接失败';
     }
 
@@ -283,10 +287,8 @@
 
     listEl.replaceChildren(...sorted.map((g) => {
       const hot = g.upDelta + g.downDelta > 0;
-      const item = el('section', ['grp', hot ? 'hot' : '', g.unmatched ? 'unmatched' : ''].filter(Boolean).join(' '));
-      item.title = g.unmatched
-        ? '棕色边线：直连'
-        : hot ? '绿色边线：正在传输' : '灰绿色边线：当前无流量';
+      const item = el('section', hot ? 'grp hot' : 'grp');
+      item.title = hot ? '绿色边线：正在传输' : '灰色边线：当前无流量';
       const head = el('div', 'grp-head');
       const info = el('div', 'grp-info');
       info.appendChild(el('div', 'rule', g.payload || g.rule));
@@ -477,7 +479,7 @@
         box-shadow: 0 0 0 3px rgba(15,23,42,.42), 0 3px 10px rgba(0,0,0,.35);
         transition: background .2s ease, transform .15s ease, box-shadow .2s ease; }
       .dot:hover { transform: scale(1.3); }
-      .dot[data-state="connected"] { background: #3ddc97; }
+      .dot[data-state="connected"] { background: #64748b; }
       .dot[data-state="active"] { background: #42d3a4; animation: pulse 1.1s ease-in-out infinite; }
       .dot[data-state="error"] { background: #fb7185; }
       @keyframes pulse {
@@ -499,8 +501,8 @@
       .topline { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
       .brand { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1;
         color: #f3faf6; font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
-      .brand-mark { width: 7px; height: 7px; border-radius: 50%; background: #3ddc97;
-        box-shadow: 0 0 9px rgba(61,220,151,.72); }
+      .brand-mark { width: 7px; height: 7px; border-radius: 50%; background: #5f756a; }
+      .brand-mark.active { background: #3ddc97; box-shadow: 0 0 9px rgba(61,220,151,.72); }
       .badge { padding: 2px 7px; border-radius: 999px; background: rgba(61,220,151,.1);
         color: #8ce9bd; font-size: 10.5px; font-weight: 600; letter-spacing: 0; text-transform: none; }
       .pin { border: 1px solid rgba(148,196,174,.18); border-radius: 8px; padding: 4px 8px;
@@ -525,8 +527,6 @@
       .grp::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: #426354; }
       .grp.hot { border-color: rgba(61,220,151,.28); background: #14231b; }
       .grp.hot::before { background: #3ddc97; box-shadow: 0 0 9px rgba(61,220,151,.5); }
-      .grp.unmatched::before { background: #725f3d; }
-      .grp.unmatched .rule { color: #d8c6a5; }
       .grp-head { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 10px 7px 12px; }
       .grp-info { min-width: 0; flex: 1; }
       .rule { color: #f1f7f3; font-weight: 680; overflow-wrap: anywhere; }
@@ -560,9 +560,9 @@
     const head = el('div', 'head');
     const topline = el('div', 'topline');
     const brand = el('div', 'brand');
-    const brandMark = el('span', 'brand-mark');
-    brandMark.title = '绿色：Mihomo 监控正在运行';
-    brand.append(brandMark, el('span', '', 'Mihomo'), countEl = el('span', 'badge', '1 域名'));
+    brandMarkEl = el('span', 'brand-mark');
+    brandMarkEl.title = '灰色：当前无流量';
+    brand.append(brandMarkEl, el('span', '', 'Mihomo'), countEl = el('span', 'badge', '1 域名'));
     pinEl = el('button', 'pin', '固定');
     pinEl.type = 'button';
     pinEl.addEventListener('click', () => setPinned(!panel.classList.contains('pinned')));
