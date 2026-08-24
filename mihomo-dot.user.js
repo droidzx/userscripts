@@ -1,13 +1,12 @@
 // ==UserScript==
 // @name         公司 Mihomo 当前页面规则
 // @namespace    local.droidzx.mihomo
-// @version      1.8.2
+// @version      1.8.3
 // @description  页面角落一个小圆点，显示当前网页命中的 Mihomo 规则与实时流量
 // @author       droidzx
 // @match        *://*/*
 // @run-at       document-idle
 // @noframes
-// @grant        GM_registerMenuCommand
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
@@ -540,23 +539,10 @@
     }
   }
 
-  function registerMenus() {
-    GM_registerMenuCommand('立即重新连接', restart);
-    GM_registerMenuCommand('重新识别本机设备', () => {
-      sourceIP = '';
-      sourceVotes.clear();
-      staleCount = 0;
-      GM_setValue(KEYS.sourceIP, '');
-      restart();
-    });
-  }
-
-
   /* ---------- 启动 ---------- */
 
   monitorPageRequests();
   buildUi();
-  registerMenus();
   restart();
 
   setInterval(checkPageChange, 700);
