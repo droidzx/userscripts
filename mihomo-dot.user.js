@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.8.4
+// @version      1.8.5
 // @description  页面角落一个小圆点，显示当前网页命中的 Mihomo 规则与实时流量
 // @author       droidzx
 // @match        *://*/*
@@ -184,8 +184,6 @@
     const elapsed = previousTrafficAt ? Math.max((now - previousTrafficAt) / 1000, 0.1) : 0;
     const nextTraffic = new Map();
     const groups = new Map();
-    let totalUp = 0;
-    let totalDown = 0;
     let totalUpDelta = 0;
     let totalDownDelta = 0;
 
@@ -206,13 +204,12 @@
       const gk = `${rule}|${payload}`;
       let g = groups.get(gk);
       if (!g) {
-        g = { rule, payload, chain, up: 0, down: 0, upDelta: 0, downDelta: 0, hosts: new Map() };
+        g = { rule, payload, chain, upDelta: 0, downDelta: 0, hosts: new Map() };
         groups.set(gk, g);
       }
       let h = g.hosts.get(host);
-      if (!h) { h = { host, up: 0, down: 0, delta: 0 }; g.hosts.set(host, h); }
-      g.up += up; g.down += down; h.up += up; h.down += down;
-      totalUp += up; totalDown += down;
+      if (!h) { h = { host, down: 0, delta: 0 }; g.hosts.set(host, h); }
+      h.down += down;
 
       if (measureSpeed && elapsed) {
         const prev = previousTraffic.get(key);
@@ -232,7 +229,7 @@
     if (countEl) countEl.textContent = String(groups.size);
     if (dot) {
       dot.title = connected
-        ? `Mihomo · ${groups.size} 条规则 · ↑${formatBytes(totalUp)} ↓${formatBytes(totalDown)}`
+        ? `Mihomo · ${groups.size} 条规则 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
         : 'Mihomo 未连接';
     }
 
@@ -247,9 +244,7 @@
       }
     }
     if (titleEl) {
-      titleEl.textContent = busy
-        ? `↑ ${formatBytes(totalUpDelta / (elapsed || 1))}/s   ↓ ${formatBytes(totalDownDelta / (elapsed || 1))}/s`
-        : `↑ ${formatBytes(totalUp)}   ↓ ${formatBytes(totalDown)}`;
+      titleEl.textContent = `↑ ${formatBytes(totalUpDelta / (elapsed || 1))}/s   ↓ ${formatBytes(totalDownDelta / (elapsed || 1))}/s`;
     }
 
     const cmp = (a, b) => a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
@@ -276,14 +271,13 @@
       head.appendChild(info);
       if (hot) head.appendChild(el('span', 'hot-tag', '传输中'));
       item.appendChild(head);
-      item.appendChild(el('div', 'traffic', `↑ ${formatBytes(g.up)}   ↓ ${formatBytes(g.down)}`));
 
       const hosts = el('div', 'hosts');
       for (const h of [...g.hosts.values()].sort((a, b) => cmp(a.host, b.host))) {
         const row = el('div', h.delta > 0 ? 'host-row on' : 'host-row');
         row.appendChild(el('span', 'led'));
         row.appendChild(el('span', 'host', h.host));
-        row.appendChild(el('span', 'ht', `↑${formatBytes(h.up)} ↓${formatBytes(h.down)}`));
+        row.appendChild(el('span', 'ht', formatBytes(h.down)));
         hosts.appendChild(row);
       }
       item.appendChild(hosts);
@@ -489,12 +483,11 @@
         background: rgba(30,41,59,.42); overflow: hidden; }
       .grp:last-child { margin-bottom: 0; }
       .grp.hot { border-color: rgba(56,189,248,.3); }
-      .grp-head { display: flex; align-items: center; gap: 8px; padding: 7px 9px 2px; }
+      .grp-head { display: flex; align-items: center; gap: 8px; padding: 7px 9px; }
       .grp-info { min-width: 0; flex: 1; }
       .rule { color: #fdba74; font-weight: 700; overflow-wrap: anywhere; }
       .sub { color: #64748b; font-size: 10.5px; }
       .hot-tag { color: #7dd3fc; font-size: 11px; white-space: nowrap; }
-      .traffic { padding: 0 9px 6px; color: #94a3b8; font-variant-numeric: tabular-nums; }
       .hosts { border-top: 1px solid rgba(148,163,184,.09); background: rgba(2,6,23,.16); }
       .host-row { display: grid; grid-template-columns: 6px minmax(0,1fr) auto; align-items: center;
         gap: 7px; padding: 4px 9px; border-bottom: 1px solid rgba(148,163,184,.07); }
