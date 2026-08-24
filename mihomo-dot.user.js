@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.8.7
+// @version      1.8.8
 // @description  页面角落一个小圆点，显示当前网页的全部域名、Mihomo 规则与实时流量
 // @author       droidzx
 // @match        *://*/*
@@ -232,13 +232,13 @@
     }
 
     // 浏览器看到、但 Mihomo 当前连接表里没有的域名仍要显示。
-    // 若本页早先识别过其规则，沿用该规则；否则只标记为未识别，避免误称为确定的 ROS 流量。
+    // 若本页早先识别过其规则，沿用该规则；否则归入直连组。
     for (const host of observedDomains) {
       if (!host || activeHosts.has(host)) continue;
       const route = knownRoutes.get(host);
       const g = route
         ? getGroup(route.rule, route.payload, route.chain)
-        : getGroup('未识别到 Mihomo 规则', '', '通常由 ROS 直连，也可能来自缓存或已结束请求', true);
+        : getGroup('直连', '', '', true);
       if (!g.hosts.has(host)) g.hosts.set(host, { host, down: null, delta: 0 });
     }
     const domainCount = new Set([...groups.values()].flatMap((g) => [...g.hosts.keys()])).size;
@@ -250,8 +250,8 @@
     if (countEl) countEl.textContent = `${domainCount} 域名`;
     if (dot) {
       dot.title = connected
-        ? `Mihomo · 本页 ${domainCount} 个域名 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
-        : 'Mihomo 未连接';
+        ? `${busy ? '闪动绿色：正在传输' : '绿色：Mihomo 已连接'}\n本页 ${domainCount} 个域名 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
+        : '红色：Mihomo 连接失败';
     }
 
     if (!expanded || !listEl) return;
@@ -284,6 +284,9 @@
     listEl.replaceChildren(...sorted.map((g) => {
       const hot = g.upDelta + g.downDelta > 0;
       const item = el('section', ['grp', hot ? 'hot' : '', g.unmatched ? 'unmatched' : ''].filter(Boolean).join(' '));
+      item.title = g.unmatched
+        ? '棕色边线：直连'
+        : hot ? '绿色边线：正在传输' : '灰绿色边线：当前无流量';
       const head = el('div', 'grp-head');
       const info = el('div', 'grp-info');
       info.appendChild(el('div', 'rule', g.payload || g.rule));
@@ -296,6 +299,7 @@
       const hosts = el('div', 'hosts');
       for (const h of [...g.hosts.values()].sort((a, b) => cmp(a.host, b.host))) {
         const row = el('div', h.delta > 0 ? 'host-row on' : 'host-row');
+        row.title = h.delta > 0 ? '绿色圆点：正在传输' : '灰色圆点：当前无流量';
         row.appendChild(el('span', 'led'));
         row.appendChild(el('span', 'host', h.host));
         row.appendChild(el('span', h.down === null ? 'ht unknown' : 'ht', h.down === null ? '—' : formatBytes(h.down)));
@@ -550,13 +554,15 @@
     const wrap = el('div', 'wrap');
     dot = el('div', 'dot');
     dot.dataset.state = 'idle';
-    dot.title = 'Mihomo 正在连接…';
+    dot.title = '灰色：Mihomo 正在连接…';
 
     panel = el('div', 'panel');
     const head = el('div', 'head');
     const topline = el('div', 'topline');
     const brand = el('div', 'brand');
-    brand.append(el('span', 'brand-mark'), el('span', '', 'Mihomo'), countEl = el('span', 'badge', '1 域名'));
+    const brandMark = el('span', 'brand-mark');
+    brandMark.title = '绿色：Mihomo 监控正在运行';
+    brand.append(brandMark, el('span', '', 'Mihomo'), countEl = el('span', 'badge', '1 域名'));
     pinEl = el('button', 'pin', '固定');
     pinEl.type = 'button';
     pinEl.addEventListener('click', () => setPinned(!panel.classList.contains('pinned')));
