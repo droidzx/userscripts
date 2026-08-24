@@ -11,7 +11,7 @@
 - 油猴脚本不是抓包工具，顶部网速只统计 Mihomo 连接，无法统计 ROS 上的真实流量
 
 - 数据来自 mihomo 的 `/connections` 接口，按本机 IP 过滤，只显示当前设备的连接
-- 活动颜色：灰 = 当前无流量，绿 = 正在传输；右下角圆点红色表示 Mihomo 连接失败，颜色可悬停查看含义
+- 活动颜色：灰 = 当前无流量，绿 = 正在传输；右下角圆点红色表示 Mihomo 连接失败
 - 本机设备由脚本自动识别，界面不显示本机 IP；识别失效时会自动重新识别
 - 安装 / 更新地址：`https://raw.githubusercontent.com/droidzx/userscripts/main/mihomo-dot.user.js`
 

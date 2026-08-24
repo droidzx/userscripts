@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.8.9
+// @version      1.8.10
 // @description  页面角落一个小圆点，显示当前网页的全部域名、Mihomo 规则与实时流量
 // @author       droidzx
 // @match        *://*/*
@@ -249,13 +249,12 @@
     setDotState(connected ? (busy ? 'active' : 'connected') : 'error');
     if (brandMarkEl) {
       brandMarkEl.classList.toggle('active', busy);
-      brandMarkEl.title = busy ? '绿色：正在传输' : '灰色：当前无流量';
     }
     if (countEl) countEl.textContent = `${domainCount} 域名`;
     if (dot) {
       dot.title = connected
-        ? `${busy ? '闪动绿色：正在传输' : '灰色：当前无流量'}\n本页 ${domainCount} 个域名 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
-        : '红色：Mihomo 连接失败';
+        ? `本页 ${domainCount} 个域名 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
+        : 'Mihomo 连接失败';
     }
 
     if (!expanded || !listEl) return;
@@ -288,7 +287,6 @@
     listEl.replaceChildren(...sorted.map((g) => {
       const hot = g.upDelta + g.downDelta > 0;
       const item = el('section', hot ? 'grp hot' : 'grp');
-      item.title = hot ? '绿色边线：正在传输' : '灰色边线：当前无流量';
       const head = el('div', 'grp-head');
       const info = el('div', 'grp-info');
       info.appendChild(el('div', 'rule', g.payload || g.rule));
@@ -301,7 +299,6 @@
       const hosts = el('div', 'hosts');
       for (const h of [...g.hosts.values()].sort((a, b) => cmp(a.host, b.host))) {
         const row = el('div', h.delta > 0 ? 'host-row on' : 'host-row');
-        row.title = h.delta > 0 ? '绿色圆点：正在传输' : '灰色圆点：当前无流量';
         row.appendChild(el('span', 'led'));
         row.appendChild(el('span', 'host', h.host));
         row.appendChild(el('span', h.down === null ? 'ht unknown' : 'ht', h.down === null ? '—' : formatBytes(h.down)));
@@ -554,14 +551,13 @@
     const wrap = el('div', 'wrap');
     dot = el('div', 'dot');
     dot.dataset.state = 'idle';
-    dot.title = '灰色：Mihomo 正在连接…';
+    dot.title = 'Mihomo 正在连接…';
 
     panel = el('div', 'panel');
     const head = el('div', 'head');
     const topline = el('div', 'topline');
     const brand = el('div', 'brand');
     brandMarkEl = el('span', 'brand-mark');
-    brandMarkEl.title = '灰色：当前无流量';
     brand.append(brandMarkEl, el('span', '', 'Mihomo'), countEl = el('span', 'badge', '1 域名'));
     pinEl = el('button', 'pin', '固定');
     pinEl.type = 'button';
