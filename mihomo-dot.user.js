@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.9.1
-// @description  页面角落一个小圆点，显示当前网页的 Mihomo 策略、传输域名与实时流量
+// @version      1.9.2
+// @description  页面角落一个小圆点，显示当前网页的 Mihomo 最终出口、传输域名与实时流量
 // @author       droidzx
 // @match        *://*/*
 // @run-at       document-idle
@@ -188,12 +188,11 @@
     let totalUpDelta = 0;
     let totalDownDelta = 0;
 
-    const getGroup = (rule, payload, chain) => {
-      const gk = `${rule}|${payload}`;
-      let g = groups.get(gk);
+    const getGroup = (chain) => {
+      let g = groups.get(chain);
       if (!g) {
-        g = { rule, payload, chain, upDelta: 0, downDelta: 0, hosts: new Map() };
-        groups.set(gk, g);
+        g = { chain, upDelta: 0, downDelta: 0, hosts: new Map() };
+        groups.set(chain, g);
       }
       return g;
     };
@@ -209,10 +208,9 @@
       nextTraffic.set(key, { up, down });
       if (!isCurrentPageDomain(host)) continue;
 
-      const rule = c.rule || '未知规则';
-      const payload = c.rulePayload || '';
-      const chain = Array.isArray(c.chains) ? c.chains.filter(Boolean).join(' · ') : '';
-      const g = getGroup(rule, payload, chain);
+      // Mihomo 的 chains 第一项是最终实际出口，后续项是中间策略组。
+      const chain = Array.isArray(c.chains) && c.chains.length ? c.chains[0] : '';
+      const g = getGroup(chain);
       let h = g.hosts.get(host);
       if (!h) { h = { host, delta: 0 }; g.hosts.set(host, h); }
 
@@ -238,10 +236,8 @@
     if (measureSpeed && elapsed) {
       for (const g of activeGroups) {
         for (const h of g.hosts.values()) {
-          const key = `${g.rule}|${g.payload}|${g.chain}|${h.host}`;
+          const key = `${g.chain}|${h.host}`;
           recentActivity.set(key, {
-            rule: g.rule,
-            payload: g.payload,
             chain: g.chain,
             host: h.host,
             speed: h.delta / elapsed,
@@ -255,17 +251,13 @@
       if (now - item.lastActiveAt > RECENT_TTL) recentActivity.delete(key);
     }
 
-    const displayGroups = new Map();
+    const displayHosts = new Map();
     for (const item of recentActivity.values()) {
-      const key = `${item.rule}|${item.payload}|${item.chain}`;
-      let group = displayGroups.get(key);
-      if (!group) {
-        group = { rule: item.rule, payload: item.payload, chain: item.chain, activeSpeed: 0, lastActiveAt: 0, hosts: new Map() };
-        displayGroups.set(key, group);
+      const previous = displayHosts.get(item.host);
+      if (!previous || Number(item.active) > Number(previous.active)
+        || (item.active === previous.active && item.lastActiveAt > previous.lastActiveAt)) {
+        displayHosts.set(item.host, item);
       }
-      group.hosts.set(item.host, item);
-      group.lastActiveAt = Math.max(group.lastActiveAt, item.lastActiveAt);
-      if (item.active) group.activeSpeed += item.speed;
     }
 
     if (measureSpeed) { previousTraffic = nextTraffic; previousTrafficAt = now; }
@@ -277,7 +269,7 @@
     }
     if (countEl) countEl.textContent = busy
       ? `${domainCount} 传输中`
-      : recentActivity.size ? `${recentActivity.size} 刚刚` : '空闲';
+      : displayHosts.size ? `${displayHosts.size} 刚刚` : '空闲';
     if (dot) {
       dot.title = connected
         ? `本页 ${domainCount} 个域名 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
@@ -298,14 +290,15 @@
     if (downSpeedEl) downSpeedEl.textContent = `${formatBytes(totalDownDelta / (elapsed || 1))}/s`;
 
     const cmp = (a, b) => a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
-    const sorted = [...displayGroups.values()].sort((a, b) => (
-      b.activeSpeed - a.activeSpeed
+    const sorted = [...displayHosts.values()].sort((a, b) => (
+      Number(b.active) - Number(a.active)
       || b.lastActiveAt - a.lastActiveAt
-      || cmp(a.payload || a.rule, b.payload || b.rule) || cmp(a.rule, b.rule)
+      || cmp(a.host, b.host)
     ));
-    const strategies = sorted.map((g) => g.payload || g.rule)
+    const activeExits = sorted.filter((item) => item.active).map((item) => item.chain || 'DIRECT')
       .filter((name, index, all) => all.indexOf(name) === index);
-    if (strategyEl) strategyEl.textContent = strategies.length ? strategies.join(' · ') : '暂无传输';
+    const exits = activeExits.length ? activeExits : sorted.slice(0, 1).map((item) => item.chain || 'DIRECT');
+    if (strategyEl) strategyEl.textContent = exits.length ? exits.join(' / ') : '暂无传输';
     const scroll = listEl.scrollTop;
 
     if (!sorted.length) {
@@ -314,28 +307,12 @@
       return;
     }
 
-    listEl.replaceChildren(...sorted.map((g) => {
-      const item = el('section', 'grp');
-      const head = el('div', 'grp-head');
-      const info = el('div', 'grp-info');
-      info.appendChild(el('div', 'rule', g.payload || g.rule));
-      const sub = [g.payload ? g.rule : '', g.chain].filter(Boolean).join(' · ');
-      if (sub) info.appendChild(el('div', 'sub', sub));
-      head.appendChild(info);
-      head.appendChild(el('span', g.activeSpeed > 0 ? 'hot-tag' : 'hot-tag recent',
-        g.activeSpeed > 0 ? formatBytes(g.activeSpeed) + '/s' : '刚刚'));
-      item.appendChild(head);
-
-      const hosts = el('div', 'hosts');
-      for (const h of [...g.hosts.values()].sort((a, b) => cmp(a.host, b.host))) {
-        const row = el('div', h.active ? 'host-row on' : 'host-row recent');
-        row.appendChild(el('span', 'led'));
-        row.appendChild(el('span', 'host', h.host));
-        row.appendChild(el('span', 'ht', h.active ? formatBytes(h.speed) + '/s' : '刚刚'));
-        hosts.appendChild(row);
-      }
-      item.appendChild(hosts);
-      return item;
+    listEl.replaceChildren(...sorted.map((item) => {
+      const row = el('div', item.active ? 'host-row on' : 'host-row recent');
+      row.appendChild(el('span', 'led'));
+      row.appendChild(el('span', 'host', item.host));
+      row.appendChild(el('span', 'ht', item.active ? formatBytes(item.speed) + '/s' : '刚刚'));
+      return row;
     }));
     listEl.scrollTop = scroll;
   }
@@ -538,11 +515,12 @@
         background: rgba(255,255,255,.045); color: #91a99d; cursor: pointer; font: inherit; font-size: 11px; }
       .pin:hover { background: rgba(255,255,255,.09); color: #f4fbf7; }
       .pin.on { color: #b6f4d4; background: rgba(61,220,151,.13); border-color: rgba(61,220,151,.35); }
-      .strategy { margin-bottom: 9px; padding: 10px 11px; border: 1px solid rgba(61,220,151,.18);
-        border-radius: 12px; background: linear-gradient(135deg, rgba(61,220,151,.11), rgba(61,220,151,.035)); }
-      .strategy-label { display: block; margin-bottom: 3px; color: #759384; font-size: 10px; letter-spacing: .08em; }
-      .strategy-value { display: block; overflow: hidden; color: #b8f5d5; font-size: 15px; line-height: 1.3;
-        font-weight: 760; text-overflow: ellipsis; white-space: nowrap; }
+      .strategy { margin-bottom: 9px; padding: 12px 13px; border: 1px solid rgba(61,220,151,.3);
+        border-radius: 13px; background: linear-gradient(135deg, rgba(61,220,151,.16), rgba(61,220,151,.045));
+        box-shadow: 0 0 22px rgba(61,220,151,.055) inset; }
+      .strategy-label { display: block; margin-bottom: 4px; color: #79a18e; font-size: 10px; letter-spacing: .11em; }
+      .strategy-value { display: block; color: #c8ffe2; font-size: 20px; line-height: 1.25; font-weight: 800;
+        letter-spacing: .01em; overflow-wrap: anywhere; text-shadow: 0 0 18px rgba(61,220,151,.22); }
       .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
       .metric { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0;
         padding: 7px 9px; border: 1px solid rgba(148,196,174,.09); border-radius: 9px; background: rgba(5,13,9,.28); }
@@ -555,22 +533,11 @@
       .status[data-state="ok"] { display: none; }
       .status[data-state="error"] { color: #fda4af; background: rgba(76,20,31,.35); }
       .list { max-height: min(42vh, 380px); overflow: auto; padding: 8px; background: rgba(7,12,9,.76); }
-      .grp { position: relative; margin-bottom: 7px; border: 1px solid rgba(61,220,151,.16); border-radius: 12px;
-        background: linear-gradient(145deg, rgba(22,37,29,.96), rgba(15,26,20,.96)); overflow: hidden; }
-      .grp:last-child { margin-bottom: 0; }
-      .grp::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: #3ddc97;
-        box-shadow: 0 0 9px rgba(61,220,151,.5); }
-      .grp-head { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 10px 7px 12px; }
-      .grp-info { min-width: 0; flex: 1; }
-      .rule { color: #f1f7f3; font-weight: 680; overflow-wrap: anywhere; }
-      .sub { margin-top: 1px; color: #657d71; font-size: 10.5px; }
-      .hot-tag { padding: 2px 7px; border-radius: 999px; color: #78e8ae; background: rgba(61,220,151,.1);
-        font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      .hot-tag.recent { color: #81978c; background: rgba(255,255,255,.04); }
-      .hosts { border-top: 1px solid rgba(148,196,174,.08); background: rgba(4,10,7,.22); }
       .host-row { display: grid; grid-template-columns: 6px minmax(0,1fr) auto; align-items: center;
-        gap: 8px; min-height: 27px; padding: 3px 10px 3px 12px; border-bottom: 1px solid rgba(148,196,174,.055); }
-      .host-row:last-child { border-bottom: 0; }
+        gap: 9px; min-height: 34px; margin-bottom: 6px; padding: 4px 10px 4px 12px;
+        border: 1px solid rgba(148,196,174,.1); border-radius: 10px;
+        background: linear-gradient(145deg, rgba(22,37,29,.94), rgba(15,26,20,.94)); }
+      .host-row:last-child { margin-bottom: 0; }
       .led { width: 5px; height: 5px; border-radius: 50%; background: #3c5549; }
       .host-row.on .led { background: #3ddc97; box-shadow: 0 0 7px rgba(61,220,151,.9); }
       .host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c5d6cd; }
@@ -601,7 +568,7 @@
     pinEl.addEventListener('click', () => setPinned(!panel.classList.contains('pinned')));
     topline.append(brand, pinEl);
     const strategy = el('div', 'strategy');
-    strategy.append(el('span', 'strategy-label', '当前策略'), strategyEl = el('strong', 'strategy-value', '暂无传输'));
+    strategy.append(el('span', 'strategy-label', '最终出口'), strategyEl = el('strong', 'strategy-value', '暂无传输'));
     const metrics = el('div', 'metrics');
     const upMetric = el('div', 'metric up');
     upMetric.append(el('span', 'metric-label', 'Mihomo ↑ 上传'), upSpeedEl = el('strong', 'metric-value', '0 B/s'));
