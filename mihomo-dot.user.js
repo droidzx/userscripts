@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.8.10
-// @description  页面角落一个小圆点，显示当前网页的全部域名、Mihomo 规则与实时流量
+// @version      1.9.0
+// @description  页面角落一个小圆点，显示当前网页的 Mihomo 策略、传输域名与实时流量
 // @author       droidzx
 // @match        *://*/*
 // @run-at       document-idle
@@ -42,7 +42,6 @@
   let currentPageUrl = location.href;
   let previousTraffic = new Map();
   let previousTrafficAt = 0;
-  let knownRoutes = new Map();
   let expanded = false;
   let hoverCloseTimer = null;
 
@@ -52,7 +51,7 @@
   const sourceVotes = new Map();
   let staleCount = 0;
 
-  let root, dot, panel, statusEl, listEl, countEl, upSpeedEl, downSpeedEl, pinEl, brandMarkEl;
+  let root, dot, panel, statusEl, listEl, countEl, strategyEl, upSpeedEl, downSpeedEl, pinEl, brandMarkEl;
 
   /* ---------- 工具 ---------- */
 
@@ -92,7 +91,6 @@
       const host = normalizeHost(url.hostname);
       if (host && !observedDomains.has(host)) {
         observedDomains.add(host);
-        queueMicrotask(refreshFromCache);
       }
     } catch (_) { /* 非 URL 的 performance entry */ }
   }
@@ -185,15 +183,14 @@
     const elapsed = previousTrafficAt ? Math.max((now - previousTrafficAt) / 1000, 0.1) : 0;
     const nextTraffic = new Map();
     const groups = new Map();
-    const activeHosts = new Set();
     let totalUpDelta = 0;
     let totalDownDelta = 0;
 
-    const getGroup = (rule, payload, chain, unmatched = false) => {
+    const getGroup = (rule, payload, chain) => {
       const gk = `${rule}|${payload}`;
       let g = groups.get(gk);
       if (!g) {
-        g = { rule, payload, chain, unmatched, upDelta: 0, downDelta: 0, hosts: new Map() };
+        g = { rule, payload, chain, upDelta: 0, downDelta: 0, hosts: new Map() };
         groups.set(gk, g);
       }
       return g;
@@ -212,13 +209,10 @@
 
       const rule = c.rule || '未知规则';
       const payload = c.rulePayload || '';
-      const chain = Array.isArray(c.chains) && c.chains.length ? c.chains[0] : '';
-      knownRoutes.set(host, { rule, payload, chain });
-      activeHosts.add(host);
+      const chain = Array.isArray(c.chains) ? c.chains.filter(Boolean).join(' · ') : '';
       const g = getGroup(rule, payload, chain);
       let h = g.hosts.get(host);
-      if (!h) { h = { host, down: 0, delta: 0 }; g.hosts.set(host, h); }
-      h.down += down;
+      if (!h) { h = { host, delta: 0 }; g.hosts.set(host, h); }
 
       if (measureSpeed && elapsed) {
         const prev = previousTraffic.get(key);
@@ -231,17 +225,11 @@
       }
     }
 
-    // 浏览器看到、但 Mihomo 当前连接表里没有的域名仍要显示。
-    // 若本页早先识别过其规则，沿用该规则；否则归入直连组。
-    for (const host of observedDomains) {
-      if (!host || activeHosts.has(host)) continue;
-      const route = knownRoutes.get(host);
-      const g = route
-        ? getGroup(route.rule, route.payload, route.chain)
-        : getGroup('直连', '', '', true);
-      if (!g.hosts.has(host)) g.hosts.set(host, { host, down: null, delta: 0 });
-    }
-    const domainCount = new Set([...groups.values()].flatMap((g) => [...g.hosts.keys()])).size;
+    const activeGroups = [...groups.values()].map((g) => ({
+      ...g,
+      hosts: new Map([...g.hosts].filter(([, h]) => h.delta > 0)),
+    })).filter((g) => g.hosts.size > 0);
+    const domainCount = new Set(activeGroups.flatMap((g) => [...g.hosts.keys()])).size;
 
     if (measureSpeed) { previousTraffic = nextTraffic; previousTrafficAt = now; }
 
@@ -250,7 +238,7 @@
     if (brandMarkEl) {
       brandMarkEl.classList.toggle('active', busy);
     }
-    if (countEl) countEl.textContent = `${domainCount} 域名`;
+    if (countEl) countEl.textContent = busy ? `${domainCount} 传输中` : '空闲';
     if (dot) {
       dot.title = connected
         ? `本页 ${domainCount} 个域名 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
@@ -271,29 +259,30 @@
     if (downSpeedEl) downSpeedEl.textContent = `${formatBytes(totalDownDelta / (elapsed || 1))}/s`;
 
     const cmp = (a, b) => a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
-    const sorted = [...groups.values()].sort((a, b) => (
-      Number(a.unmatched) - Number(b.unmatched)
+    const sorted = activeGroups.sort((a, b) => (
+      (b.upDelta + b.downDelta) - (a.upDelta + a.downDelta)
       || cmp(a.payload || a.rule, b.payload || b.rule) || cmp(a.rule, b.rule)
     ));
+    const strategies = sorted.map((g) => g.payload || g.rule)
+      .filter((name, index, all) => all.indexOf(name) === index);
+    if (strategyEl) strategyEl.textContent = strategies.length ? strategies.join(' · ') : '暂无传输';
     const scroll = listEl.scrollTop;
 
     if (!sorted.length) {
-      listEl.replaceChildren(el('div', 'empty',
-        connected ? '本页暂无活动连接' : '等待连接 Mihomo…'));
+      listEl.replaceChildren(el('div', 'empty', connected ? '当前没有正在传输的域名' : '等待连接 Mihomo…'));
       listEl.scrollTop = scroll;
       return;
     }
 
     listEl.replaceChildren(...sorted.map((g) => {
-      const hot = g.upDelta + g.downDelta > 0;
-      const item = el('section', hot ? 'grp hot' : 'grp');
+      const item = el('section', 'grp');
       const head = el('div', 'grp-head');
       const info = el('div', 'grp-info');
       info.appendChild(el('div', 'rule', g.payload || g.rule));
       const sub = [g.payload ? g.rule : '', g.chain].filter(Boolean).join(' · ');
       if (sub) info.appendChild(el('div', 'sub', sub));
       head.appendChild(info);
-      if (hot) head.appendChild(el('span', 'hot-tag', '传输中'));
+      head.appendChild(el('span', 'hot-tag', formatBytes((g.upDelta + g.downDelta) / (elapsed || 1)) + '/s'));
       item.appendChild(head);
 
       const hosts = el('div', 'hosts');
@@ -301,7 +290,7 @@
         const row = el('div', h.delta > 0 ? 'host-row on' : 'host-row');
         row.appendChild(el('span', 'led'));
         row.appendChild(el('span', 'host', h.host));
-        row.appendChild(el('span', h.down === null ? 'ht unknown' : 'ht', h.down === null ? '—' : formatBytes(h.down)));
+        row.appendChild(el('span', 'ht', formatBytes(h.delta / (elapsed || 1)) + '/s'));
         hosts.appendChild(row);
       }
       item.appendChild(hosts);
@@ -321,6 +310,7 @@
     activeRequest = null;
     connected = false;
     setDotState('error');
+    if (strategyEl) strategyEl.textContent = '连接失败';
     if (statusEl) {
       statusEl.textContent = `连接失败，${Math.round(retryDelay / 1000)} 秒后重试`;
       statusEl.dataset.state = 'error';
@@ -345,6 +335,7 @@
         if (res.status === 401) {
           connected = false;
           setDotState('error');
+          if (strategyEl) strategyEl.textContent = '鉴权失败';
           if (statusEl) {
             statusEl.textContent = 'Mihomo 拒绝鉴权，检查脚本顶部的 SECRET';
             statusEl.dataset.state = 'error';
@@ -385,7 +376,6 @@
     currentPageUrl = location.href;
     // 换页必须清空，否则旧页面的第三方域名会一直被算进「本页」
     observedDomains = new Set([normalizeHost(location.hostname)]);
-    knownRoutes = new Map();
     previousTraffic = new Map();
     previousTrafficAt = 0;
     refreshFromCache();
@@ -483,19 +473,19 @@
         0%, 100% { box-shadow: 0 0 0 3px rgba(15,23,42,.42), 0 0 7px 2px rgba(61,220,151,.75); }
         50% { box-shadow: 0 0 0 3px rgba(15,23,42,.42), 0 0 14px 6px rgba(61,220,151,.28); }
       }
-      .panel { position: absolute; right: 0; bottom: 22px; width: 356px; max-width: calc(100vw - 24px);
-        color: #e8f0ec; background: #101914;
-        border: 1px solid rgba(148,196,174,.2); border-radius: 16px; overflow: hidden;
-        box-shadow: 0 24px 70px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.025) inset;
+      .panel { position: absolute; right: 0; bottom: 22px; width: 332px; max-width: calc(100vw - 24px);
+        color: #e8f0ec; background: rgba(9,16,12,.97); backdrop-filter: blur(18px);
+        border: 1px solid rgba(125,220,174,.2); border-radius: 18px; overflow: hidden;
+        box-shadow: 0 26px 80px rgba(0,0,0,.58), 0 0 0 1px rgba(255,255,255,.025) inset;
         opacity: 0; visibility: hidden; transform: translateY(7px) scale(.985); transform-origin: bottom right;
         transition: opacity .16s ease, transform .16s ease, visibility .16s; }
       .panel.open { opacity: 1; visibility: visible; transform: translateY(0); }
       .panel.to-right { right: auto; left: 0; }
       .panel.to-bottom { bottom: auto; top: 22px; }
       .panel.to-right { transform-origin: bottom left; }
-      .head { padding: 12px; background: linear-gradient(145deg, #16271e, #122019);
+      .head { padding: 14px; background: radial-gradient(circle at 85% -20%, rgba(61,220,151,.16), transparent 48%), linear-gradient(145deg, #16271e, #101b15);
         border-bottom: 1px solid rgba(148,196,174,.13); }
-      .topline { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+      .topline { display: flex; align-items: center; gap: 8px; margin-bottom: 13px; }
       .brand { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1;
         color: #f3faf6; font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
       .brand-mark { width: 7px; height: 7px; border-radius: 50%; background: #5f756a; }
@@ -506,9 +496,14 @@
         background: rgba(255,255,255,.045); color: #91a99d; cursor: pointer; font: inherit; font-size: 11px; }
       .pin:hover { background: rgba(255,255,255,.09); color: #f4fbf7; }
       .pin.on { color: #b6f4d4; background: rgba(61,220,151,.13); border-color: rgba(61,220,151,.35); }
-      .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-      .metric { min-width: 0; padding: 8px 10px; border: 1px solid rgba(148,196,174,.11);
-        border-radius: 10px; background: rgba(5,13,9,.32); }
+      .strategy { margin-bottom: 9px; padding: 10px 11px; border: 1px solid rgba(61,220,151,.18);
+        border-radius: 12px; background: linear-gradient(135deg, rgba(61,220,151,.11), rgba(61,220,151,.035)); }
+      .strategy-label { display: block; margin-bottom: 3px; color: #759384; font-size: 10px; letter-spacing: .08em; }
+      .strategy-value { display: block; overflow: hidden; color: #b8f5d5; font-size: 15px; line-height: 1.3;
+        font-weight: 760; text-overflow: ellipsis; white-space: nowrap; }
+      .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+      .metric { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0;
+        padding: 7px 9px; border: 1px solid rgba(148,196,174,.09); border-radius: 9px; background: rgba(5,13,9,.28); }
       .metric-label { display: block; margin-bottom: 2px; color: #769184; font-size: 10px; }
       .metric-value { display: block; overflow: hidden; color: #f2f8f5; font-size: 15px; line-height: 1.25;
         font-weight: 720; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
@@ -517,19 +512,18 @@
         border-bottom: 1px solid rgba(148,196,174,.1); font-size: 11px; }
       .status[data-state="ok"] { display: none; }
       .status[data-state="error"] { color: #fda4af; background: rgba(76,20,31,.35); }
-      .list { max-height: min(48vh, 470px); overflow: auto; padding: 8px; background: #0d1511; }
-      .grp { position: relative; margin-bottom: 7px; border: 1px solid rgba(148,196,174,.1); border-radius: 11px;
-        background: #121d17; overflow: hidden; }
+      .list { max-height: min(42vh, 380px); overflow: auto; padding: 8px; background: rgba(7,12,9,.76); }
+      .grp { position: relative; margin-bottom: 7px; border: 1px solid rgba(61,220,151,.16); border-radius: 12px;
+        background: linear-gradient(145deg, rgba(22,37,29,.96), rgba(15,26,20,.96)); overflow: hidden; }
       .grp:last-child { margin-bottom: 0; }
-      .grp::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: #426354; }
-      .grp.hot { border-color: rgba(61,220,151,.28); background: #14231b; }
-      .grp.hot::before { background: #3ddc97; box-shadow: 0 0 9px rgba(61,220,151,.5); }
+      .grp::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: #3ddc97;
+        box-shadow: 0 0 9px rgba(61,220,151,.5); }
       .grp-head { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 10px 7px 12px; }
       .grp-info { min-width: 0; flex: 1; }
       .rule { color: #f1f7f3; font-weight: 680; overflow-wrap: anywhere; }
       .sub { margin-top: 1px; color: #657d71; font-size: 10.5px; }
       .hot-tag { padding: 2px 7px; border-radius: 999px; color: #78e8ae; background: rgba(61,220,151,.1);
-        font-size: 10px; white-space: nowrap; }
+        font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
       .hosts { border-top: 1px solid rgba(148,196,174,.08); background: rgba(4,10,7,.22); }
       .host-row { display: grid; grid-template-columns: 6px minmax(0,1fr) auto; align-items: center;
         gap: 8px; min-height: 27px; padding: 3px 10px 3px 12px; border-bottom: 1px solid rgba(148,196,174,.055); }
@@ -541,8 +535,7 @@
       .ht { min-width: 54px; padding: 2px 6px; border-radius: 6px; color: #7e978a; background: rgba(255,255,255,.035);
         text-align: right; font-size: 10.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
       .host-row.on .ht { color: #9aebc2; background: rgba(61,220,151,.08); }
-      .ht.unknown { color: #586c62; background: transparent; }
-      .empty { padding: 26px 8px; text-align: center; color: #70877b; }
+      .empty { padding: 28px 8px; text-align: center; color: #647a6e; }
       ::-webkit-scrollbar { width: 5px; }
       ::-webkit-scrollbar-track { background: transparent; }
       ::-webkit-scrollbar-thumb { background: #354d41; border-radius: 6px; }
@@ -558,18 +551,20 @@
     const topline = el('div', 'topline');
     const brand = el('div', 'brand');
     brandMarkEl = el('span', 'brand-mark');
-    brand.append(brandMarkEl, el('span', '', 'Mihomo'), countEl = el('span', 'badge', '1 域名'));
+    brand.append(brandMarkEl, el('span', '', 'Mihomo'), countEl = el('span', 'badge', '空闲'));
     pinEl = el('button', 'pin', '固定');
     pinEl.type = 'button';
     pinEl.addEventListener('click', () => setPinned(!panel.classList.contains('pinned')));
     topline.append(brand, pinEl);
+    const strategy = el('div', 'strategy');
+    strategy.append(el('span', 'strategy-label', '当前策略'), strategyEl = el('strong', 'strategy-value', '暂无传输'));
     const metrics = el('div', 'metrics');
     const upMetric = el('div', 'metric up');
     upMetric.append(el('span', 'metric-label', 'Mihomo ↑ 上传'), upSpeedEl = el('strong', 'metric-value', '0 B/s'));
     const downMetric = el('div', 'metric down');
     downMetric.append(el('span', 'metric-label', 'Mihomo ↓ 下载'), downSpeedEl = el('strong', 'metric-value', '0 B/s'));
     metrics.append(upMetric, downMetric);
-    head.append(topline, metrics);
+    head.append(topline, strategy, metrics);
     statusEl = el('div', 'status', '正在连接…');
     listEl = el('div', 'list');
     listEl.appendChild(el('div', 'empty', '等待本页产生网络请求…'));
