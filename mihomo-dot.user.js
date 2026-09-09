@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.9.0
+// @version      1.9.1
 // @description  页面角落一个小圆点，显示当前网页的 Mihomo 策略、传输域名与实时流量
 // @author       droidzx
 // @match        *://*/*
@@ -24,6 +24,7 @@
   // 展开时 1s 刷新，收起成小圆点时 3s，后台标签页完全不请求
   const POLL_OPEN = 1000;
   const POLL_IDLE = 3000;
+  const RECENT_TTL = 8000;
 
   // 不做自己的显示/隐藏开关 —— Tampermonkey 弹出菜单里脚本本身就有启用开关，
   // 再造一个只会让人分不清当前是哪个状态。
@@ -42,6 +43,7 @@
   let currentPageUrl = location.href;
   let previousTraffic = new Map();
   let previousTrafficAt = 0;
+  let recentActivity = new Map();
   let expanded = false;
   let hoverCloseTimer = null;
 
@@ -231,6 +233,41 @@
     })).filter((g) => g.hosts.size > 0);
     const domainCount = new Set(activeGroups.flatMap((g) => [...g.hosts.keys()])).size;
 
+    // 短连接常在一个轮询周期内就结束，停止传输后短暂保留，让人有时间看清。
+    for (const item of recentActivity.values()) item.active = false;
+    if (measureSpeed && elapsed) {
+      for (const g of activeGroups) {
+        for (const h of g.hosts.values()) {
+          const key = `${g.rule}|${g.payload}|${g.chain}|${h.host}`;
+          recentActivity.set(key, {
+            rule: g.rule,
+            payload: g.payload,
+            chain: g.chain,
+            host: h.host,
+            speed: h.delta / elapsed,
+            active: true,
+            lastActiveAt: now,
+          });
+        }
+      }
+    }
+    for (const [key, item] of recentActivity) {
+      if (now - item.lastActiveAt > RECENT_TTL) recentActivity.delete(key);
+    }
+
+    const displayGroups = new Map();
+    for (const item of recentActivity.values()) {
+      const key = `${item.rule}|${item.payload}|${item.chain}`;
+      let group = displayGroups.get(key);
+      if (!group) {
+        group = { rule: item.rule, payload: item.payload, chain: item.chain, activeSpeed: 0, lastActiveAt: 0, hosts: new Map() };
+        displayGroups.set(key, group);
+      }
+      group.hosts.set(item.host, item);
+      group.lastActiveAt = Math.max(group.lastActiveAt, item.lastActiveAt);
+      if (item.active) group.activeSpeed += item.speed;
+    }
+
     if (measureSpeed) { previousTraffic = nextTraffic; previousTrafficAt = now; }
 
     const busy = totalUpDelta + totalDownDelta > 0;
@@ -238,7 +275,9 @@
     if (brandMarkEl) {
       brandMarkEl.classList.toggle('active', busy);
     }
-    if (countEl) countEl.textContent = busy ? `${domainCount} 传输中` : '空闲';
+    if (countEl) countEl.textContent = busy
+      ? `${domainCount} 传输中`
+      : recentActivity.size ? `${recentActivity.size} 刚刚` : '空闲';
     if (dot) {
       dot.title = connected
         ? `本页 ${domainCount} 个域名 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
@@ -259,8 +298,9 @@
     if (downSpeedEl) downSpeedEl.textContent = `${formatBytes(totalDownDelta / (elapsed || 1))}/s`;
 
     const cmp = (a, b) => a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
-    const sorted = activeGroups.sort((a, b) => (
-      (b.upDelta + b.downDelta) - (a.upDelta + a.downDelta)
+    const sorted = [...displayGroups.values()].sort((a, b) => (
+      b.activeSpeed - a.activeSpeed
+      || b.lastActiveAt - a.lastActiveAt
       || cmp(a.payload || a.rule, b.payload || b.rule) || cmp(a.rule, b.rule)
     ));
     const strategies = sorted.map((g) => g.payload || g.rule)
@@ -282,15 +322,16 @@
       const sub = [g.payload ? g.rule : '', g.chain].filter(Boolean).join(' · ');
       if (sub) info.appendChild(el('div', 'sub', sub));
       head.appendChild(info);
-      head.appendChild(el('span', 'hot-tag', formatBytes((g.upDelta + g.downDelta) / (elapsed || 1)) + '/s'));
+      head.appendChild(el('span', g.activeSpeed > 0 ? 'hot-tag' : 'hot-tag recent',
+        g.activeSpeed > 0 ? formatBytes(g.activeSpeed) + '/s' : '刚刚'));
       item.appendChild(head);
 
       const hosts = el('div', 'hosts');
       for (const h of [...g.hosts.values()].sort((a, b) => cmp(a.host, b.host))) {
-        const row = el('div', h.delta > 0 ? 'host-row on' : 'host-row');
+        const row = el('div', h.active ? 'host-row on' : 'host-row recent');
         row.appendChild(el('span', 'led'));
         row.appendChild(el('span', 'host', h.host));
-        row.appendChild(el('span', 'ht', formatBytes(h.delta / (elapsed || 1)) + '/s'));
+        row.appendChild(el('span', 'ht', h.active ? formatBytes(h.speed) + '/s' : '刚刚'));
         hosts.appendChild(row);
       }
       item.appendChild(hosts);
@@ -378,6 +419,7 @@
     observedDomains = new Set([normalizeHost(location.hostname)]);
     previousTraffic = new Map();
     previousTrafficAt = 0;
+    recentActivity = new Map();
     refreshFromCache();
   }
 
@@ -524,6 +566,7 @@
       .sub { margin-top: 1px; color: #657d71; font-size: 10.5px; }
       .hot-tag { padding: 2px 7px; border-radius: 999px; color: #78e8ae; background: rgba(61,220,151,.1);
         font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .hot-tag.recent { color: #81978c; background: rgba(255,255,255,.04); }
       .hosts { border-top: 1px solid rgba(148,196,174,.08); background: rgba(4,10,7,.22); }
       .host-row { display: grid; grid-template-columns: 6px minmax(0,1fr) auto; align-items: center;
         gap: 8px; min-height: 27px; padding: 3px 10px 3px 12px; border-bottom: 1px solid rgba(148,196,174,.055); }
@@ -532,6 +575,7 @@
       .host-row.on .led { background: #3ddc97; box-shadow: 0 0 7px rgba(61,220,151,.9); }
       .host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c5d6cd; }
       .host-row.on .host { color: #effaf4; }
+      .host-row.recent { opacity: .58; }
       .ht { min-width: 54px; padding: 2px 6px; border-radius: 6px; color: #7e978a; background: rgba(255,255,255,.035);
         text-align: right; font-size: 10.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
       .host-row.on .ht { color: #9aebc2; background: rgba(61,220,151,.08); }
