@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.9.3
+// @version      1.9.4
 // @description  页面角落一个小圆点，显示当前网页的 Mihomo 最终出口、传输域名与实时流量
 // @author       droidzx
 // @match        *://*/*
@@ -298,7 +298,7 @@
     const activeExits = sorted.filter((item) => item.active).map((item) => item.chain || 'DIRECT')
       .filter((name, index, all) => all.indexOf(name) === index);
     const exits = activeExits.length ? activeExits : sorted.slice(0, 1).map((item) => item.chain || 'DIRECT');
-    if (strategyEl) strategyEl.textContent = exits.length ? exits.join(' / ') : '暂无传输';
+    if (strategyEl) strategyEl.textContent = exits.length ? exits.join(' · ') : '暂无传输';
     const scroll = listEl.scrollTop;
 
     if (!sorted.length) {
@@ -520,14 +520,14 @@
         border-radius: 13px; background: linear-gradient(135deg, rgba(61,220,151,.16), rgba(61,220,151,.045));
         box-shadow: 0 0 22px rgba(61,220,151,.055) inset; }
       .strategy-label { display: block; margin-bottom: 4px; color: #79a18e; font-size: 10px; letter-spacing: .11em; }
-      .strategy-value { display: block; color: #c8ffe2; font-size: 20px; line-height: 1.25; font-weight: 800;
+      .strategy-value { display: block; color: #c8ffe2; font-size: 16px; line-height: 1.3; font-weight: 760;
         letter-spacing: .01em; overflow-wrap: anywhere; text-shadow: 0 0 18px rgba(61,220,151,.22); }
       .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-      .metric { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0;
+      .metric { display: grid; grid-template-columns: 18px minmax(0,1fr); align-items: center; gap: 5px; min-width: 0;
         padding: 7px 9px; border: 1px solid rgba(148,196,174,.09); border-radius: 9px; background: rgba(5,13,9,.28); }
-      .metric-label { display: block; margin-bottom: 2px; color: #769184; font-size: 10px; }
-      .metric-value { display: block; overflow: hidden; color: #f2f8f5; font-size: 15px; line-height: 1.25;
-        font-weight: 720; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+      .metric-label { display: block; color: #789486; font-size: 15px; font-weight: 700; line-height: 1; }
+      .metric-value { display: block; min-width: 0; color: #f2f8f5; font-size: 13px; line-height: 1.25;
+        font-weight: 720; font-variant-numeric: tabular-nums; letter-spacing: -.02em; text-align: right; white-space: nowrap; }
       .metric.down .metric-value { color: #72e5aa; }
       .status { padding: 7px 12px; color: #86efac; background: rgba(11,25,17,.92);
         border-bottom: 1px solid rgba(148,196,174,.1); font-size: 11px; flex: 0 0 auto; }
@@ -569,12 +569,12 @@
     pinEl.addEventListener('click', () => setPinned(!panel.classList.contains('pinned')));
     topline.append(brand, pinEl);
     const strategy = el('div', 'strategy');
-    strategy.append(el('span', 'strategy-label', '最终出口'), strategyEl = el('strong', 'strategy-value', '暂无传输'));
+    strategy.append(el('span', 'strategy-label', '出口'), strategyEl = el('strong', 'strategy-value', '暂无传输'));
     const metrics = el('div', 'metrics');
     const upMetric = el('div', 'metric up');
-    upMetric.append(el('span', 'metric-label', 'Mihomo ↑ 上传'), upSpeedEl = el('strong', 'metric-value', '0 B/s'));
+    upMetric.append(el('span', 'metric-label', '↑'), upSpeedEl = el('strong', 'metric-value', '0 B/s'));
     const downMetric = el('div', 'metric down');
-    downMetric.append(el('span', 'metric-label', 'Mihomo ↓ 下载'), downSpeedEl = el('strong', 'metric-value', '0 B/s'));
+    downMetric.append(el('span', 'metric-label', '↓'), downSpeedEl = el('strong', 'metric-value', '0 B/s'));
     metrics.append(upMetric, downMetric);
     head.append(topline, strategy, metrics);
     statusEl = el('div', 'status', '正在连接…');
