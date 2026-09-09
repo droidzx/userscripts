@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.9.2
+// @version      1.9.3
 // @description  页面角落一个小圆点，显示当前网页的 Mihomo 最终出口、传输域名与实时流量
 // @author       droidzx
 // @match        *://*/*
@@ -492,7 +492,8 @@
         0%, 100% { box-shadow: 0 0 0 3px rgba(15,23,42,.42), 0 0 7px 2px rgba(61,220,151,.75); }
         50% { box-shadow: 0 0 0 3px rgba(15,23,42,.42), 0 0 14px 6px rgba(61,220,151,.28); }
       }
-      .panel { position: absolute; right: 0; bottom: 22px; width: 332px; max-width: calc(100vw - 24px);
+      .panel { position: absolute; right: 0; bottom: 22px; display: flex; flex-direction: column;
+        width: 332px; height: min(420px, calc(100vh - 64px)); max-width: calc(100vw - 24px);
         color: #e8f0ec; background: rgba(9,16,12,.97); backdrop-filter: blur(18px);
         border: 1px solid rgba(125,220,174,.2); border-radius: 18px; overflow: hidden;
         box-shadow: 0 26px 80px rgba(0,0,0,.58), 0 0 0 1px rgba(255,255,255,.025) inset;
@@ -503,7 +504,7 @@
       .panel.to-bottom { bottom: auto; top: 22px; }
       .panel.to-right { transform-origin: bottom left; }
       .head { padding: 14px; background: radial-gradient(circle at 85% -20%, rgba(61,220,151,.16), transparent 48%), linear-gradient(145deg, #16271e, #101b15);
-        border-bottom: 1px solid rgba(148,196,174,.13); }
+        border-bottom: 1px solid rgba(148,196,174,.13); flex: 0 0 auto; }
       .topline { display: flex; align-items: center; gap: 8px; margin-bottom: 13px; }
       .brand { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1;
         color: #f3faf6; font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
@@ -529,10 +530,10 @@
         font-weight: 720; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
       .metric.down .metric-value { color: #72e5aa; }
       .status { padding: 7px 12px; color: #86efac; background: rgba(11,25,17,.92);
-        border-bottom: 1px solid rgba(148,196,174,.1); font-size: 11px; }
+        border-bottom: 1px solid rgba(148,196,174,.1); font-size: 11px; flex: 0 0 auto; }
       .status[data-state="ok"] { display: none; }
       .status[data-state="error"] { color: #fda4af; background: rgba(76,20,31,.35); }
-      .list { max-height: min(42vh, 380px); overflow: auto; padding: 8px; background: rgba(7,12,9,.76); }
+      .list { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 8px; background: rgba(7,12,9,.76); }
       .host-row { display: grid; grid-template-columns: 6px minmax(0,1fr) auto; align-items: center;
         gap: 9px; min-height: 34px; margin-bottom: 6px; padding: 4px 10px 4px 12px;
         border: 1px solid rgba(148,196,174,.1); border-radius: 10px;
