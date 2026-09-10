@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      1.9.4
-// @description  页面角落一个小圆点，显示当前网页的 Mihomo 最终出口、传输域名与实时流量
+// @version      2.0.0
+// @description  页面角落显示当前网页的 Mihomo 出口，点击查看完整代理链
 // @author       droidzx
 // @match        *://*/*
 // @run-at       document-idle
@@ -21,16 +21,14 @@
   const API = 'http://192.168.1.50:9090';
   const SECRET = 'a2b63dabca9aa255d53c17cee45dbf0baeef20d13cfc3a69';
 
-  // 展开时 1s 刷新，收起成小圆点时 3s，后台标签页完全不请求
-  const POLL_OPEN = 1000;
-  const POLL_IDLE = 3000;
-  const RECENT_TTL = 8000;
+  // 短连接可能很快结束，前台每秒检查，后台标签页不请求。
+  const POLL_INTERVAL = 1000;
+  const RECENT_TTL = 10000;
 
   // 不做自己的显示/隐藏开关 —— Tampermonkey 弹出菜单里脚本本身就有启用开关，
   // 再造一个只会让人分不清当前是哪个状态。
   const KEYS = {
     position: 'mihomo-dot-position',
-    pinned: 'mihomo-dot-pinned',
     sourceIP: 'mihomo-source-ip',
   };
 
@@ -38,14 +36,10 @@
   let pollTimer = null;
   let activeRequest = null;
   let retryDelay = 1000;
-  let connected = false;
   let latestConnections = [];
   let currentPageUrl = location.href;
-  let previousTraffic = new Map();
-  let previousTrafficAt = 0;
-  let recentActivity = new Map();
+  let recentChains = new Map();
   let expanded = false;
-  let hoverCloseTimer = null;
 
   // /connections 是整个旁路由的全局连接表，不按 sourceIP 过滤会混进别的设备。
   // 复用上次自动识别的值；失效后由 learnSourceIP() 从本页域名的连接里重新投票识别。
@@ -53,7 +47,7 @@
   const sourceVotes = new Map();
   let staleCount = 0;
 
-  let root, dot, panel, statusEl, listEl, countEl, strategyEl, upSpeedEl, downSpeedEl, pinEl, brandMarkEl;
+  let root, dot, panel, listEl, countEl, brandMarkEl;
 
   /* ---------- 工具 ---------- */
 
@@ -72,16 +66,6 @@
       return close > 0 ? host.slice(1, close) : host;
     }
     return host.replace(/:\d+$/, '').replace(/\.$/, '');
-  }
-
-  function formatBytes(value) {
-    const bytes = Math.max(0, Number(value) || 0);
-    if (bytes < 1024) return `${Math.round(bytes)} B`;
-    const units = ['KB', 'MB', 'GB', 'TB'];
-    let amount = bytes / 1024;
-    let i = 0;
-    while (amount >= 1024 && i < units.length - 1) { amount /= 1024; i += 1; }
-    return `${amount.toFixed(amount >= 100 ? 0 : amount >= 10 ? 1 : 2)} ${units[i]}`;
   }
 
   /* ---------- 观察本页用到的域名 ---------- */
@@ -173,146 +157,72 @@
 
   function refreshFromCache() {
     if (!listEl) return;
-    render(latestConnections, false);
+    render(latestConnections);
   }
 
-  function setDotState(state) {
-    if (dot) dot.dataset.state = state;
-  }
-
-  function render(connections, measureSpeed = true) {
+  function render(connections) {
     const now = Date.now();
-    const elapsed = previousTrafficAt ? Math.max((now - previousTrafficAt) / 1000, 0.1) : 0;
-    const nextTraffic = new Map();
-    const groups = new Map();
-    let totalUpDelta = 0;
-    let totalDownDelta = 0;
-
-    const getGroup = (chain) => {
-      let g = groups.get(chain);
-      if (!g) {
-        g = { chain, upDelta: 0, downDelta: 0, hosts: new Map() };
-        groups.set(chain, g);
-      }
-      return g;
-    };
+    let order = 0;
+    for (const item of recentChains.values()) item.active = false;
 
     for (const c of connections) {
       const m = c.metadata || {};
       if (sourceIP && m.sourceIP !== sourceIP) continue;
-
       const host = normalizeHost(m.host || m.sniffHost);
-      const up = Math.max(0, Number(c.upload) || 0);
-      const down = Math.max(0, Number(c.download) || 0);
-      const key = String(c.id || `${host}|${c.start || ''}`);
-      nextTraffic.set(key, { up, down });
       if (!isCurrentPageDomain(host)) continue;
 
-      // Mihomo 的 chains 第一项是最终实际出口，后续项是中间策略组。
-      const chain = Array.isArray(c.chains) && c.chains.length ? c.chains[0] : '';
-      const g = getGroup(chain);
-      let h = g.hosts.get(host);
-      if (!h) { h = { host, delta: 0 }; g.hosts.set(host, h); }
-
-      if (measureSpeed && elapsed) {
-        const prev = previousTraffic.get(key);
-        if (prev) {
-          const du = Math.max(0, up - prev.up);
-          const dd = Math.max(0, down - prev.down);
-          g.upDelta += du; g.downDelta += dd; h.delta += du + dd;
-          totalUpDelta += du; totalDownDelta += dd;
-        }
-      }
+      const rawChain = Array.isArray(c.chains) ? c.chains.filter(Boolean) : [];
+      if (!rawChain.length) continue;
+      const key = rawChain.join('\u001f');
+      recentChains.set(key, {
+        steps: [...rawChain].reverse(),
+        exit: rawChain[0],
+        active: true,
+        lastSeenAt: now,
+        order: order++,
+      });
     }
 
-    const activeGroups = [...groups.values()].map((g) => ({
-      ...g,
-      hosts: new Map([...g.hosts].filter(([, h]) => h.delta > 0)),
-    })).filter((g) => g.hosts.size > 0);
-    const domainCount = new Set(activeGroups.flatMap((g) => [...g.hosts.keys()])).size;
-
-    // 短连接常在一个轮询周期内就结束，停止传输后短暂保留，让人有时间看清。
-    for (const item of recentActivity.values()) item.active = false;
-    if (measureSpeed && elapsed) {
-      for (const g of activeGroups) {
-        for (const h of g.hosts.values()) {
-          const key = `${g.chain}|${h.host}`;
-          recentActivity.set(key, {
-            chain: g.chain,
-            host: h.host,
-            speed: h.delta / elapsed,
-            active: true,
-            lastActiveAt: now,
-          });
-        }
-      }
-    }
-    for (const [key, item] of recentActivity) {
-      if (now - item.lastActiveAt > RECENT_TTL) recentActivity.delete(key);
+    for (const [key, item] of recentChains) {
+      if (now - item.lastSeenAt > RECENT_TTL) recentChains.delete(key);
     }
 
-    const displayHosts = new Map();
-    for (const item of recentActivity.values()) {
-      const previous = displayHosts.get(item.host);
-      if (!previous || Number(item.active) > Number(previous.active)
-        || (item.active === previous.active && item.lastActiveAt > previous.lastActiveAt)) {
-        displayHosts.set(item.host, item);
-      }
-    }
-
-    if (measureSpeed) { previousTraffic = nextTraffic; previousTrafficAt = now; }
-
-    const busy = totalUpDelta + totalDownDelta > 0;
-    setDotState(connected ? (busy ? 'active' : 'connected') : 'error');
-    if (brandMarkEl) {
-      brandMarkEl.classList.toggle('active', busy);
-    }
-    if (countEl) countEl.textContent = busy
-      ? `${domainCount} 传输中`
-      : displayHosts.size ? `${displayHosts.size} 刚刚` : '空闲';
-    if (dot) {
-      dot.title = connected
-        ? `本页 ${domainCount} 个域名 · ↑${formatBytes(totalUpDelta / (elapsed || 1))}/s ↓${formatBytes(totalDownDelta / (elapsed || 1))}/s`
-        : 'Mihomo 连接失败';
-    }
-
-    if (!expanded || !listEl) return;
-
-    if (statusEl) {
-      if (connected) {
-        statusEl.dataset.state = 'ok';
-      } else {
-        statusEl.textContent = `连接失败，${Math.round(retryDelay / 1000)} 秒后重试`;
-        statusEl.dataset.state = 'error';
-      }
-    }
-    if (upSpeedEl) upSpeedEl.textContent = `${formatBytes(totalUpDelta / (elapsed || 1))}/s`;
-    if (downSpeedEl) downSpeedEl.textContent = `${formatBytes(totalDownDelta / (elapsed || 1))}/s`;
-
-    const cmp = (a, b) => a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
-    const sorted = [...displayHosts.values()].sort((a, b) => (
+    const sorted = [...recentChains.values()].sort((a, b) => (
       Number(b.active) - Number(a.active)
-      || b.lastActiveAt - a.lastActiveAt
-      || cmp(a.host, b.host)
+      || (a.active && b.active ? a.order - b.order : 0)
+      || b.lastSeenAt - a.lastSeenAt
+      || a.exit.localeCompare(b.exit, 'zh-CN', { numeric: true, sensitivity: 'base' })
     ));
-    const activeExits = sorted.filter((item) => item.active).map((item) => item.chain || 'DIRECT')
-      .filter((name, index, all) => all.indexOf(name) === index);
-    const exits = activeExits.length ? activeExits : sorted.slice(0, 1).map((item) => item.chain || 'DIRECT');
-    if (strategyEl) strategyEl.textContent = exits.length ? exits.join(' · ') : '暂无传输';
-    const scroll = listEl.scrollTop;
 
     if (!sorted.length) {
-      listEl.replaceChildren(el('div', 'empty', connected ? '当前没有正在传输的域名' : '等待连接 Mihomo…'));
-      listEl.scrollTop = scroll;
+      root.style.display = 'none';
+      setExpanded(false);
       return;
     }
 
-    listEl.replaceChildren(...sorted.map((item) => {
-      const row = el('div', item.active ? 'host-row on' : 'host-row recent');
-      row.appendChild(el('span', 'led'));
-      row.appendChild(el('span', 'host', item.host));
-      row.appendChild(el('span', 'ht', item.active ? formatBytes(item.speed) + '/s' : '刚刚'));
-      return row;
+    root.style.display = '';
+    const current = sorted.find((item) => item.active) || sorted[0];
+    dot.textContent = current.exit + (sorted.length > 1 ? `  +${sorted.length - 1}` : '');
+    dot.dataset.state = sorted.some((item) => item.active) ? 'active' : 'recent';
+    dot.title = expanded ? '收起代理链' : '展开完整代理链';
+    if (brandMarkEl) brandMarkEl.classList.toggle('active', sorted.some((item) => item.active));
+    if (countEl) countEl.textContent = `${sorted.length} 条`;
+
+    if (!expanded || !listEl) return;
+
+    const scroll = listEl.scrollTop;
+    listEl.replaceChildren(...sorted.map((item, index) => {
+      const card = el('section', item.active ? 'chain-card active' : 'chain-card recent');
+      const meta = el('div', 'chain-meta');
+      meta.append(el('span', 'chain-index', String(index + 1).padStart(2, '0')),
+        el('span', 'chain-state', item.active ? '连接中' : '刚刚'));
+      const path = el('div', 'chain-path');
+      item.steps.forEach((step, stepIndex) => {
+        path.appendChild(el('span', stepIndex === item.steps.length - 1 ? 'chain-step exit' : 'chain-step', step));
+        if (stepIndex < item.steps.length - 1) path.appendChild(el('span', 'chain-arrow', '›'));
+      });
+      card.append(meta, path);
+      return card;
     }));
     listEl.scrollTop = scroll;
   }
@@ -326,13 +236,8 @@
 
   function onFailure() {
     activeRequest = null;
-    connected = false;
-    setDotState('error');
-    if (strategyEl) strategyEl.textContent = '连接失败';
-    if (statusEl) {
-      statusEl.textContent = `连接失败，${Math.round(retryDelay / 1000)} 秒后重试`;
-      statusEl.dataset.state = 'error';
-    }
+    root.style.display = 'none';
+    setExpanded(false);
     schedule(retryDelay);
     retryDelay = Math.min(retryDelay + 500, 5000);
   }
@@ -341,7 +246,7 @@
     clearTimeout(pollTimer);
     pollTimer = null;
     if (activeRequest) return;
-    if (document.hidden) { schedule(POLL_IDLE); return; }
+    if (document.hidden) { schedule(POLL_INTERVAL); return; }
 
     activeRequest = GM_xmlhttpRequest({
       method: 'GET',
@@ -351,13 +256,8 @@
       onload(res) {
         activeRequest = null;
         if (res.status === 401) {
-          connected = false;
-          setDotState('error');
-          if (strategyEl) strategyEl.textContent = '鉴权失败';
-          if (statusEl) {
-            statusEl.textContent = 'Mihomo 拒绝鉴权，检查脚本顶部的 SECRET';
-            statusEl.dataset.state = 'error';
-          }
+          root.style.display = 'none';
+          setExpanded(false);
           schedule(10000);
           return;
         }
@@ -365,12 +265,11 @@
         try {
           const data = JSON.parse(res.responseText);
           if (!Array.isArray(data.connections)) throw new Error('bad payload');
-          connected = true;
           retryDelay = 1000;
           latestConnections = data.connections;
           learnSourceIP(latestConnections);
           render(latestConnections);
-          schedule(expanded ? POLL_OPEN : POLL_IDLE);
+          schedule(POLL_INTERVAL);
         } catch (_) { onFailure(); }
       },
       onerror: onFailure,
@@ -382,7 +281,6 @@
     clearTimeout(pollTimer);
     activeRequest?.abort?.();
     activeRequest = null;
-    connected = false;
     retryDelay = 1000;
     poll();
   }
@@ -394,9 +292,7 @@
     currentPageUrl = location.href;
     // 换页必须清空，否则旧页面的第三方域名会一直被算进「本页」
     observedDomains = new Set([normalizeHost(location.hostname)]);
-    previousTraffic = new Map();
-    previousTrafficAt = 0;
-    recentActivity = new Map();
+    recentChains = new Map();
     refreshFromCache();
   }
 
@@ -410,13 +306,13 @@
   function restorePosition() {
     const p = GM_getValue(KEYS.position, null);
     if (!p || typeof p.left !== 'number') return;
-    root.style.left = `${Math.min(Math.max(6, p.left), Math.max(6, window.innerWidth - 26))}px`;
-    root.style.top = `${Math.min(Math.max(6, p.top), Math.max(6, window.innerHeight - 26))}px`;
+    root.style.left = `${Math.min(Math.max(6, p.left), Math.max(6, window.innerWidth - (root.offsetWidth || 120) - 6))}px`;
+    root.style.top = `${Math.min(Math.max(6, p.top), Math.max(6, window.innerHeight - (root.offsetHeight || 32) - 6))}px`;
     root.style.right = 'auto';
     root.style.bottom = 'auto';
   }
 
-  // 面板默认向左上方展开。圆点被拖到左边或顶部时那个方向没有空间，
+  // 面板默认向左上方展开。标签被拖到左边或顶部时那个方向没有空间，
   // 面板会被视口边缘切掉，所以展开前先按可用空间翻转锚点。
   function anchorPanel() {
     const r = root.getBoundingClientRect();
@@ -425,27 +321,23 @@
     const w = panel.offsetWidth || 340;
     const h = panel.offsetHeight || 260;
     panel.classList.toggle('to-right', r.right - w < margin);
-    panel.classList.toggle('to-bottom', r.bottom - 22 - h < margin);
+    panel.classList.toggle('to-bottom', r.top - h - 8 < margin);
   }
 
   function setExpanded(on) {
     expanded = on;
     if (on) anchorPanel();
     panel.classList.toggle('open', on);
+    dot.setAttribute('aria-expanded', String(on));
     if (on) { refreshFromCache(); restart(); }
   }
 
-  function setPinned(on, save = true) {
-    panel.classList.toggle('pinned', on);
-    pinEl.classList.toggle('on', on);
-    pinEl.textContent = on ? '已固定' : '固定';
-    pinEl.title = on ? '取消固定，移出面板后自动收起' : '固定面板，保持展开';
-    pinEl.setAttribute('aria-pressed', String(on));
-    if (save) GM_setValue(KEYS.pinned, on);
-    if (on) setExpanded(true);
-  }
-
   function enableDrag() {
+    dot.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      ev.preventDefault();
+      setExpanded(!expanded);
+    });
     dot.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
       const r = root.getBoundingClientRect();
@@ -456,8 +348,8 @@
 
       const move = (e) => {
         if (Math.abs(e.clientX - r.left - ox) + Math.abs(e.clientY - r.top - oy) > 3) moved = true;
-        root.style.left = `${Math.min(Math.max(0, e.clientX - ox), window.innerWidth - 20)}px`;
-        root.style.top = `${Math.min(Math.max(0, e.clientY - oy), window.innerHeight - 20)}px`;
+        root.style.left = `${Math.min(Math.max(0, e.clientX - ox), window.innerWidth - root.offsetWidth)}px`;
+        root.style.top = `${Math.min(Math.max(0, e.clientY - oy), window.innerHeight - root.offsetHeight)}px`;
         root.style.right = 'auto';
         root.style.bottom = 'auto';
       };
@@ -465,6 +357,7 @@
         dot.removeEventListener('pointermove', move);
         dot.removeEventListener('pointerup', up);
         if (moved) savePosition();
+        else setExpanded(!expanded);
       };
       dot.addEventListener('pointermove', move);
       dot.addEventListener('pointerup', up);
@@ -480,129 +373,81 @@
     style.textContent = `
       :host { all: initial; position: fixed; right: 16px; bottom: 16px; z-index: 2147483646; }
       .wrap { position: relative; font: 12px/1.45 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      .dot { width: 12px; height: 12px; border-radius: 50%; cursor: pointer; background: #64748b;
-        border: 2px solid rgba(255,255,255,.9); box-sizing: border-box;
-        box-shadow: 0 0 0 3px rgba(15,23,42,.42), 0 3px 10px rgba(0,0,0,.35);
-        transition: background .2s ease, transform .15s ease, box-shadow .2s ease; }
-      .dot:hover { transform: scale(1.3); }
-      .dot[data-state="connected"] { background: #64748b; }
-      .dot[data-state="active"] { background: #42d3a4; animation: pulse 1.1s ease-in-out infinite; }
-      .dot[data-state="error"] { background: #fb7185; }
-      @keyframes pulse {
-        0%, 100% { box-shadow: 0 0 0 3px rgba(15,23,42,.42), 0 0 7px 2px rgba(61,220,151,.75); }
-        50% { box-shadow: 0 0 0 3px rgba(15,23,42,.42), 0 0 14px 6px rgba(61,220,151,.28); }
-      }
-      .panel { position: absolute; right: 0; bottom: 22px; display: flex; flex-direction: column;
-        width: 332px; height: min(420px, calc(100vh - 64px)); max-width: calc(100vw - 24px);
+      .dot { display: block; max-width: min(220px, calc(100vw - 32px)); height: 30px; padding: 0 12px;
+        overflow: hidden; border: 1px solid rgba(104,211,160,.34); border-radius: 999px; cursor: grab;
+        color: #d9fbea; background: linear-gradient(135deg, rgba(21,42,31,.96), rgba(11,24,17,.97));
+        box-shadow: 0 8px 28px rgba(0,0,0,.4), 0 0 16px rgba(61,220,151,.08);
+        font: 700 12px/28px Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-overflow: ellipsis; white-space: nowrap; transition: border-color .18s ease, opacity .18s ease, transform .15s ease; }
+      .dot:hover { border-color: rgba(104,230,176,.62); transform: translateY(-1px); }
+      .dot:active { cursor: grabbing; transform: translateY(0); }
+      .dot:focus-visible { outline: 2px solid rgba(105,240,179,.7); outline-offset: 2px; }
+      .dot[data-state="active"] { border-color: rgba(61,220,151,.58); }
+      .dot[data-state="recent"] { opacity: .68; }
+      .panel { position: absolute; right: 0; bottom: calc(100% + 8px); display: flex; flex-direction: column;
+        width: 380px; height: min(240px, calc(100vh - 72px)); max-width: calc(100vw - 24px);
         color: #e8f0ec; background: rgba(9,16,12,.97); backdrop-filter: blur(18px);
-        border: 1px solid rgba(125,220,174,.2); border-radius: 18px; overflow: hidden;
-        box-shadow: 0 26px 80px rgba(0,0,0,.58), 0 0 0 1px rgba(255,255,255,.025) inset;
+        border: 1px solid rgba(125,220,174,.22); border-radius: 16px; overflow: hidden;
+        box-shadow: 0 26px 80px rgba(0,0,0,.58), 0 0 0 1px rgba(255,255,255,.03) inset;
         opacity: 0; visibility: hidden; transform: translateY(7px) scale(.985); transform-origin: bottom right;
         transition: opacity .16s ease, transform .16s ease, visibility .16s; }
       .panel.open { opacity: 1; visibility: visible; transform: translateY(0); }
       .panel.to-right { right: auto; left: 0; }
-      .panel.to-bottom { bottom: auto; top: 22px; }
+      .panel.to-bottom { bottom: auto; top: calc(100% + 8px); transform-origin: top right; }
       .panel.to-right { transform-origin: bottom left; }
-      .head { padding: 14px; background: radial-gradient(circle at 85% -20%, rgba(61,220,151,.16), transparent 48%), linear-gradient(145deg, #16271e, #101b15);
+      .panel.to-right.to-bottom { transform-origin: top left; }
+      .head { padding: 13px 14px; background: radial-gradient(circle at 88% -30%, rgba(61,220,151,.18), transparent 48%), linear-gradient(145deg, #16271e, #101b15);
         border-bottom: 1px solid rgba(148,196,174,.13); flex: 0 0 auto; }
-      .topline { display: flex; align-items: center; gap: 8px; margin-bottom: 13px; }
       .brand { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1;
-        color: #f3faf6; font-size: 12px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+        color: #f3faf6; font-size: 12px; font-weight: 750; letter-spacing: .06em; }
       .brand-mark { width: 7px; height: 7px; border-radius: 50%; background: #5f756a; }
       .brand-mark.active { background: #3ddc97; box-shadow: 0 0 9px rgba(61,220,151,.72); }
       .badge { padding: 2px 7px; border-radius: 999px; background: rgba(61,220,151,.1);
         color: #8ce9bd; font-size: 10.5px; font-weight: 600; letter-spacing: 0; text-transform: none; }
-      .pin { border: 1px solid rgba(148,196,174,.18); border-radius: 8px; padding: 4px 8px;
-        background: rgba(255,255,255,.045); color: #91a99d; cursor: pointer; font: inherit; font-size: 11px; }
-      .pin:hover { background: rgba(255,255,255,.09); color: #f4fbf7; }
-      .pin.on { color: #b6f4d4; background: rgba(61,220,151,.13); border-color: rgba(61,220,151,.35); }
-      .strategy { margin-bottom: 9px; padding: 12px 13px; border: 1px solid rgba(61,220,151,.3);
-        border-radius: 13px; background: linear-gradient(135deg, rgba(61,220,151,.16), rgba(61,220,151,.045));
-        box-shadow: 0 0 22px rgba(61,220,151,.055) inset; }
-      .strategy-label { display: block; margin-bottom: 4px; color: #79a18e; font-size: 10px; letter-spacing: .11em; }
-      .strategy-value { display: block; color: #c8ffe2; font-size: 16px; line-height: 1.3; font-weight: 760;
-        letter-spacing: .01em; overflow-wrap: anywhere; text-shadow: 0 0 18px rgba(61,220,151,.22); }
-      .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-      .metric { display: grid; grid-template-columns: 18px minmax(0,1fr); align-items: center; gap: 5px; min-width: 0;
-        padding: 7px 9px; border: 1px solid rgba(148,196,174,.09); border-radius: 9px; background: rgba(5,13,9,.28); }
-      .metric-label { display: block; color: #789486; font-size: 15px; font-weight: 700; line-height: 1; }
-      .metric-value { display: block; min-width: 0; color: #f2f8f5; font-size: 13px; line-height: 1.25;
-        font-weight: 720; font-variant-numeric: tabular-nums; letter-spacing: -.02em; text-align: right; white-space: nowrap; }
-      .metric.down .metric-value { color: #72e5aa; }
-      .status { padding: 7px 12px; color: #86efac; background: rgba(11,25,17,.92);
-        border-bottom: 1px solid rgba(148,196,174,.1); font-size: 11px; flex: 0 0 auto; }
-      .status[data-state="ok"] { display: none; }
-      .status[data-state="error"] { color: #fda4af; background: rgba(76,20,31,.35); }
-      .list { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 8px; background: rgba(7,12,9,.76); }
-      .host-row { display: grid; grid-template-columns: 6px minmax(0,1fr) auto; align-items: center;
-        gap: 9px; min-height: 34px; margin-bottom: 6px; padding: 4px 10px 4px 12px;
-        border: 1px solid rgba(148,196,174,.1); border-radius: 10px;
-        background: linear-gradient(145deg, rgba(22,37,29,.94), rgba(15,26,20,.94)); }
-      .host-row:last-child { margin-bottom: 0; }
-      .led { width: 5px; height: 5px; border-radius: 50%; background: #3c5549; }
-      .host-row.on .led { background: #3ddc97; box-shadow: 0 0 7px rgba(61,220,151,.9); }
-      .host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #c5d6cd; }
-      .host-row.on .host { color: #effaf4; }
-      .host-row.recent { opacity: .58; }
-      .ht { min-width: 54px; padding: 2px 6px; border-radius: 6px; color: #7e978a; background: rgba(255,255,255,.035);
-        text-align: right; font-size: 10.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-      .host-row.on .ht { color: #9aebc2; background: rgba(61,220,151,.08); }
-      .empty { padding: 28px 8px; text-align: center; color: #647a6e; }
+      .list { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 9px; background: rgba(7,12,9,.76); }
+      .chain-card { margin-bottom: 8px; padding: 10px 11px 12px; border: 1px solid rgba(148,196,174,.12);
+        border-radius: 12px; background: linear-gradient(145deg, rgba(23,39,30,.96), rgba(14,25,19,.96)); }
+      .chain-card:last-child { margin-bottom: 0; }
+      .chain-card.active { border-color: rgba(61,220,151,.28); box-shadow: 0 0 22px rgba(61,220,151,.04) inset; }
+      .chain-card.recent { opacity: .58; }
+      .chain-meta { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+      .chain-index { color: #647d70; font: 650 10px/1 Inter, ui-monospace, monospace; letter-spacing: .08em; }
+      .chain-state { padding: 2px 7px; border-radius: 999px; color: #7de6b0; background: rgba(61,220,151,.09); font-size: 10px; }
+      .chain-card.recent .chain-state { color: #8a9d94; background: rgba(255,255,255,.04); }
+      .chain-path { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+      .chain-step { max-width: 100%; padding: 4px 7px; overflow: hidden; border: 1px solid rgba(148,196,174,.1);
+        border-radius: 7px; color: #a9bdb3; background: rgba(255,255,255,.035); font-size: 11px;
+        text-overflow: ellipsis; white-space: nowrap; }
+      .chain-step.exit { color: #caffdf; border-color: rgba(61,220,151,.3); background: rgba(61,220,151,.12); font-weight: 750; }
+      .chain-arrow { color: #4f6c5d; font-size: 15px; line-height: 1; }
       ::-webkit-scrollbar { width: 5px; }
       ::-webkit-scrollbar-track { background: transparent; }
       ::-webkit-scrollbar-thumb { background: #354d41; border-radius: 6px; }
     `;
 
     const wrap = el('div', 'wrap');
-    dot = el('div', 'dot');
-    dot.dataset.state = 'idle';
-    dot.title = 'Mihomo 正在连接…';
+    dot = el('button', 'dot');
+    dot.type = 'button';
+    dot.dataset.state = 'recent';
+    dot.title = '展开完整代理链';
+    dot.setAttribute('aria-expanded', 'false');
 
     panel = el('div', 'panel');
     const head = el('div', 'head');
-    const topline = el('div', 'topline');
     const brand = el('div', 'brand');
     brandMarkEl = el('span', 'brand-mark');
-    brand.append(brandMarkEl, el('span', '', 'Mihomo'), countEl = el('span', 'badge', '空闲'));
-    pinEl = el('button', 'pin', '固定');
-    pinEl.type = 'button';
-    pinEl.addEventListener('click', () => setPinned(!panel.classList.contains('pinned')));
-    topline.append(brand, pinEl);
-    const strategy = el('div', 'strategy');
-    strategy.append(el('span', 'strategy-label', '出口'), strategyEl = el('strong', 'strategy-value', '暂无传输'));
-    const metrics = el('div', 'metrics');
-    const upMetric = el('div', 'metric up');
-    upMetric.append(el('span', 'metric-label', '↑'), upSpeedEl = el('strong', 'metric-value', '0 B/s'));
-    const downMetric = el('div', 'metric down');
-    downMetric.append(el('span', 'metric-label', '↓'), downSpeedEl = el('strong', 'metric-value', '0 B/s'));
-    metrics.append(upMetric, downMetric);
-    head.append(topline, strategy, metrics);
-    statusEl = el('div', 'status', '正在连接…');
+    brand.append(brandMarkEl, el('span', '', '代理链'), countEl = el('span', 'badge', '0 条'));
+    head.appendChild(brand);
     listEl = el('div', 'list');
-    listEl.appendChild(el('div', 'empty', '等待本页产生网络请求…'));
-    panel.append(head, statusEl, listEl);
-
-    // 悬停展开，标题栏按钮负责固定
-    dot.addEventListener('mouseenter', () => {
-      clearTimeout(hoverCloseTimer);
-      setExpanded(true);
-    });
-    const maybeClose = () => {
-      clearTimeout(hoverCloseTimer);
-      if (panel.classList.contains('pinned')) return;
-      hoverCloseTimer = setTimeout(() => setExpanded(false), 260);
-    };
-    dot.addEventListener('mouseleave', maybeClose);
-    panel.addEventListener('mouseenter', () => clearTimeout(hoverCloseTimer));
-    panel.addEventListener('mouseleave', maybeClose);
+    panel.append(head, listEl);
 
     wrap.append(panel, dot);
     shadow.append(style, wrap);
     document.documentElement.appendChild(root);
+    root.style.display = 'none';
 
     enableDrag();
     restorePosition();
-    setPinned(Boolean(GM_getValue(KEYS.pinned, false)), false);
   }
 
   /* ---------- 启动 ---------- */
