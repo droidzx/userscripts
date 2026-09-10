@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      2.1.1
+// @version      2.2.0
 // @description  页面角落按列表显示当前网页使用的 Mihomo 最终出口
 // @author       droidzx
 // @match        *://*/*
@@ -19,7 +19,6 @@
   'use strict';
 
   const API = 'http://192.168.1.50:9090';
-  const SECRET = 'a2b63dabca9aa255d53c17cee45dbf0baeef20d13cfc3a69';
 
   // 短连接可能很快结束，前台每秒检查，后台标签页不请求。
   const POLL_INTERVAL = 1000;
@@ -30,6 +29,7 @@
   const KEYS = {
     position: 'mihomo-dot-position',
     sourceIP: 'mihomo-source-ip',
+    secret: 'mihomo-api-secret',
   };
 
   let observedDomains = new Set();
@@ -37,6 +37,7 @@
   let activeRequest = null;
   let retryDelay = 1000;
   let currentPageUrl = location.href;
+  let secret = '';
   let previousTraffic = new Map();
   let recentRoutes = new Map();
 
@@ -65,6 +66,15 @@
       return close > 0 ? host.slice(1, close) : host;
     }
     return host.replace(/:\d+$/, '').replace(/\.$/, '');
+  }
+
+  function requestSecret() {
+    const saved = String(GM_getValue(KEYS.secret, '') || '').trim();
+    if (saved) return saved;
+    const entered = window.prompt('请输入 Mihomo API Secret\n仅保存在当前浏览器的油猴本地存储中，不会上传到 GitHub。', '');
+    const value = String(entered || '').trim();
+    if (value) GM_setValue(KEYS.secret, value);
+    return value;
   }
 
   /* ---------- 观察本页用到的域名 ---------- */
@@ -175,7 +185,9 @@
       const connectionKey = String(c.id || `${host}|${c.start || ''}|${exit}`);
       const previous = previousTraffic.get(connectionKey);
       nextTraffic.set(connectionKey, { up, down });
-      if (previous && up <= previous.up && down <= previous.down) continue;
+      // Mihomo 可能在重连时复用连接 ID，同时把流量计数重置为较小值。
+      // 只要计数发生变化就算活跃；只有完全不变才进入 5 秒消失倒计时。
+      if (previous && up === previous.up && down === previous.down) continue;
       if (seenRoutes.has(exit)) continue;
       seenRoutes.add(exit);
       recentRoutes.set(exit, {
@@ -235,13 +247,15 @@
     activeRequest = GM_xmlhttpRequest({
       method: 'GET',
       url: `${API}/connections`,
-      headers: { Authorization: `Bearer ${SECRET}` },
+      headers: { Authorization: `Bearer ${secret}` },
       timeout: 4000,
       onload(res) {
         activeRequest = null;
         if (res.status === 401) {
           root.style.display = 'none';
-          schedule(10000);
+          GM_setValue(KEYS.secret, '');
+          secret = requestSecret();
+          if (secret) schedule(0);
           return;
         }
         if (res.status !== 200) { onFailure(); return; }
@@ -360,6 +374,8 @@
 
   monitorPageRequests();
   buildUi();
+  secret = requestSecret();
+  if (!secret) return;
   restart();
 
   setInterval(checkPageChange, 700);
