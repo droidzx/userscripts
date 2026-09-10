@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      2.0.0
-// @description  页面角落显示当前网页的 Mihomo 出口，点击查看完整代理链
+// @version      2.1.0
+// @description  页面角落按列表显示当前网页使用的 Mihomo 最终出口
 // @author       droidzx
 // @match        *://*/*
 // @run-at       document-idle
@@ -23,7 +23,7 @@
 
   // 短连接可能很快结束，前台每秒检查，后台标签页不请求。
   const POLL_INTERVAL = 1000;
-  const RECENT_TTL = 10000;
+  const RECENT_TTL = 5000;
 
   // 不做自己的显示/隐藏开关 —— Tampermonkey 弹出菜单里脚本本身就有启用开关，
   // 再造一个只会让人分不清当前是哪个状态。
@@ -36,10 +36,8 @@
   let pollTimer = null;
   let activeRequest = null;
   let retryDelay = 1000;
-  let latestConnections = [];
   let currentPageUrl = location.href;
-  let recentChains = new Map();
-  let expanded = false;
+  let recentRoutes = new Map();
 
   // /connections 是整个旁路由的全局连接表，不按 sourceIP 过滤会混进别的设备。
   // 复用上次自动识别的值；失效后由 learnSourceIP() 从本页域名的连接里重新投票识别。
@@ -47,7 +45,7 @@
   const sourceVotes = new Map();
   let staleCount = 0;
 
-  let root, dot, panel, listEl, countEl, brandMarkEl;
+  let root, routeBox;
 
   /* ---------- 工具 ---------- */
 
@@ -155,15 +153,11 @@
 
   /* ---------- 渲染 ---------- */
 
-  function refreshFromCache() {
-    if (!listEl) return;
-    render(latestConnections);
-  }
-
   function render(connections) {
     const now = Date.now();
     let order = 0;
-    for (const item of recentChains.values()) item.active = false;
+    const seenRoutes = new Set();
+    for (const item of recentRoutes.values()) item.active = false;
 
     for (const c of connections) {
       const m = c.metadata || {};
@@ -173,21 +167,22 @@
 
       const rawChain = Array.isArray(c.chains) ? c.chains.filter(Boolean) : [];
       if (!rawChain.length) continue;
-      const key = rawChain.join('\u001f');
-      recentChains.set(key, {
-        steps: [...rawChain].reverse(),
-        exit: rawChain[0],
+      const exit = rawChain[0];
+      if (seenRoutes.has(exit)) continue;
+      seenRoutes.add(exit);
+      recentRoutes.set(exit, {
+        exit,
         active: true,
         lastSeenAt: now,
         order: order++,
       });
     }
 
-    for (const [key, item] of recentChains) {
-      if (now - item.lastSeenAt > RECENT_TTL) recentChains.delete(key);
+    for (const [key, item] of recentRoutes) {
+      if (now - item.lastSeenAt >= RECENT_TTL) recentRoutes.delete(key);
     }
 
-    const sorted = [...recentChains.values()].sort((a, b) => (
+    const sorted = [...recentRoutes.values()].sort((a, b) => (
       Number(b.active) - Number(a.active)
       || (a.active && b.active ? a.order - b.order : 0)
       || b.lastSeenAt - a.lastSeenAt
@@ -196,35 +191,15 @@
 
     if (!sorted.length) {
       root.style.display = 'none';
-      setExpanded(false);
       return;
     }
 
     root.style.display = '';
-    const current = sorted.find((item) => item.active) || sorted[0];
-    dot.textContent = current.exit + (sorted.length > 1 ? `  +${sorted.length - 1}` : '');
-    dot.dataset.state = sorted.some((item) => item.active) ? 'active' : 'recent';
-    dot.title = expanded ? '收起代理链' : '展开完整代理链';
-    if (brandMarkEl) brandMarkEl.classList.toggle('active', sorted.some((item) => item.active));
-    if (countEl) countEl.textContent = `${sorted.length} 条`;
-
-    if (!expanded || !listEl) return;
-
-    const scroll = listEl.scrollTop;
-    listEl.replaceChildren(...sorted.map((item, index) => {
-      const card = el('section', item.active ? 'chain-card active' : 'chain-card recent');
-      const meta = el('div', 'chain-meta');
-      meta.append(el('span', 'chain-index', String(index + 1).padStart(2, '0')),
-        el('span', 'chain-state', item.active ? '连接中' : '刚刚'));
-      const path = el('div', 'chain-path');
-      item.steps.forEach((step, stepIndex) => {
-        path.appendChild(el('span', stepIndex === item.steps.length - 1 ? 'chain-step exit' : 'chain-step', step));
-        if (stepIndex < item.steps.length - 1) path.appendChild(el('span', 'chain-arrow', '›'));
-      });
-      card.append(meta, path);
-      return card;
+    routeBox.replaceChildren(...sorted.map((item) => {
+      const row = el('div', item.active ? 'route active' : 'route recent');
+      row.append(el('span', 'route-dot'), el('span', 'route-name', item.exit));
+      return row;
     }));
-    listEl.scrollTop = scroll;
   }
 
   /* ---------- 轮询 ---------- */
@@ -237,7 +212,6 @@
   function onFailure() {
     activeRequest = null;
     root.style.display = 'none';
-    setExpanded(false);
     schedule(retryDelay);
     retryDelay = Math.min(retryDelay + 500, 5000);
   }
@@ -257,7 +231,6 @@
         activeRequest = null;
         if (res.status === 401) {
           root.style.display = 'none';
-          setExpanded(false);
           schedule(10000);
           return;
         }
@@ -266,9 +239,8 @@
           const data = JSON.parse(res.responseText);
           if (!Array.isArray(data.connections)) throw new Error('bad payload');
           retryDelay = 1000;
-          latestConnections = data.connections;
-          learnSourceIP(latestConnections);
-          render(latestConnections);
+          learnSourceIP(data.connections);
+          render(data.connections);
           schedule(POLL_INTERVAL);
         } catch (_) { onFailure(); }
       },
@@ -292,8 +264,8 @@
     currentPageUrl = location.href;
     // 换页必须清空，否则旧页面的第三方域名会一直被算进「本页」
     observedDomains = new Set([normalizeHost(location.hostname)]);
-    recentChains = new Map();
-    refreshFromCache();
+    recentRoutes = new Map();
+    render([]);
   }
 
   /* ---------- UI ---------- */
@@ -312,39 +284,14 @@
     root.style.bottom = 'auto';
   }
 
-  // 面板默认向左上方展开。标签被拖到左边或顶部时那个方向没有空间，
-  // 面板会被视口边缘切掉，所以展开前先按可用空间翻转锚点。
-  function anchorPanel() {
-    const r = root.getBoundingClientRect();
-    const margin = 8;
-    // visibility:hidden 仍然有布局，展开前就能量到尺寸
-    const w = panel.offsetWidth || 340;
-    const h = panel.offsetHeight || 260;
-    panel.classList.toggle('to-right', r.right - w < margin);
-    panel.classList.toggle('to-bottom', r.top - h - 8 < margin);
-  }
-
-  function setExpanded(on) {
-    expanded = on;
-    if (on) anchorPanel();
-    panel.classList.toggle('open', on);
-    dot.setAttribute('aria-expanded', String(on));
-    if (on) { refreshFromCache(); restart(); }
-  }
-
   function enableDrag() {
-    dot.addEventListener('keydown', (ev) => {
-      if (ev.key !== 'Enter' && ev.key !== ' ') return;
-      ev.preventDefault();
-      setExpanded(!expanded);
-    });
-    dot.addEventListener('pointerdown', (ev) => {
+    routeBox.addEventListener('pointerdown', (ev) => {
       ev.preventDefault();
       const r = root.getBoundingClientRect();
       const ox = ev.clientX - r.left;
       const oy = ev.clientY - r.top;
       let moved = false;
-      dot.setPointerCapture(ev.pointerId);
+      routeBox.setPointerCapture(ev.pointerId);
 
       const move = (e) => {
         if (Math.abs(e.clientX - r.left - ox) + Math.abs(e.clientY - r.top - oy) > 3) moved = true;
@@ -354,13 +301,12 @@
         root.style.bottom = 'auto';
       };
       const up = () => {
-        dot.removeEventListener('pointermove', move);
-        dot.removeEventListener('pointerup', up);
+        routeBox.removeEventListener('pointermove', move);
+        routeBox.removeEventListener('pointerup', up);
         if (moved) savePosition();
-        else setExpanded(!expanded);
       };
-      dot.addEventListener('pointermove', move);
-      dot.addEventListener('pointerup', up);
+      routeBox.addEventListener('pointermove', move);
+      routeBox.addEventListener('pointerup', up);
     });
   }
 
@@ -372,77 +318,26 @@
     const style = el('style');
     style.textContent = `
       :host { all: initial; position: fixed; right: 16px; bottom: 16px; z-index: 2147483646; }
-      .wrap { position: relative; font: 12px/1.45 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      .dot { display: block; max-width: min(220px, calc(100vw - 32px)); height: 30px; padding: 0 12px;
-        overflow: hidden; border: 1px solid rgba(104,211,160,.34); border-radius: 999px; cursor: grab;
-        color: #d9fbea; background: linear-gradient(135deg, rgba(21,42,31,.96), rgba(11,24,17,.97));
-        box-shadow: 0 8px 28px rgba(0,0,0,.4), 0 0 16px rgba(61,220,151,.08);
-        font: 700 12px/28px Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        text-overflow: ellipsis; white-space: nowrap; transition: border-color .18s ease, opacity .18s ease, transform .15s ease; }
-      .dot:hover { border-color: rgba(104,230,176,.62); transform: translateY(-1px); }
-      .dot:active { cursor: grabbing; transform: translateY(0); }
-      .dot:focus-visible { outline: 2px solid rgba(105,240,179,.7); outline-offset: 2px; }
-      .dot[data-state="active"] { border-color: rgba(61,220,151,.58); }
-      .dot[data-state="recent"] { opacity: .68; }
-      .panel { position: absolute; right: 0; bottom: calc(100% + 8px); display: flex; flex-direction: column;
-        width: 380px; height: min(240px, calc(100vh - 72px)); max-width: calc(100vw - 24px);
-        color: #e8f0ec; background: rgba(9,16,12,.97); backdrop-filter: blur(18px);
-        border: 1px solid rgba(125,220,174,.22); border-radius: 16px; overflow: hidden;
-        box-shadow: 0 26px 80px rgba(0,0,0,.58), 0 0 0 1px rgba(255,255,255,.03) inset;
-        opacity: 0; visibility: hidden; transform: translateY(7px) scale(.985); transform-origin: bottom right;
-        transition: opacity .16s ease, transform .16s ease, visibility .16s; }
-      .panel.open { opacity: 1; visibility: visible; transform: translateY(0); }
-      .panel.to-right { right: auto; left: 0; }
-      .panel.to-bottom { bottom: auto; top: calc(100% + 8px); transform-origin: top right; }
-      .panel.to-right { transform-origin: bottom left; }
-      .panel.to-right.to-bottom { transform-origin: top left; }
-      .head { padding: 13px 14px; background: radial-gradient(circle at 88% -30%, rgba(61,220,151,.18), transparent 48%), linear-gradient(145deg, #16271e, #101b15);
-        border-bottom: 1px solid rgba(148,196,174,.13); flex: 0 0 auto; }
-      .brand { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1;
-        color: #f3faf6; font-size: 12px; font-weight: 750; letter-spacing: .06em; }
-      .brand-mark { width: 7px; height: 7px; border-radius: 50%; background: #5f756a; }
-      .brand-mark.active { background: #3ddc97; box-shadow: 0 0 9px rgba(61,220,151,.72); }
-      .badge { padding: 2px 7px; border-radius: 999px; background: rgba(61,220,151,.1);
-        color: #8ce9bd; font-size: 10.5px; font-weight: 600; letter-spacing: 0; text-transform: none; }
-      .list { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 9px; background: rgba(7,12,9,.76); }
-      .chain-card { margin-bottom: 8px; padding: 10px 11px 12px; border: 1px solid rgba(148,196,174,.12);
-        border-radius: 12px; background: linear-gradient(145deg, rgba(23,39,30,.96), rgba(14,25,19,.96)); }
-      .chain-card:last-child { margin-bottom: 0; }
-      .chain-card.active { border-color: rgba(61,220,151,.28); box-shadow: 0 0 22px rgba(61,220,151,.04) inset; }
-      .chain-card.recent { opacity: .58; }
-      .chain-meta { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-      .chain-index { color: #647d70; font: 650 10px/1 Inter, ui-monospace, monospace; letter-spacing: .08em; }
-      .chain-state { padding: 2px 7px; border-radius: 999px; color: #7de6b0; background: rgba(61,220,151,.09); font-size: 10px; }
-      .chain-card.recent .chain-state { color: #8a9d94; background: rgba(255,255,255,.04); }
-      .chain-path { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
-      .chain-step { max-width: 100%; padding: 4px 7px; overflow: hidden; border: 1px solid rgba(148,196,174,.1);
-        border-radius: 7px; color: #a9bdb3; background: rgba(255,255,255,.035); font-size: 11px;
-        text-overflow: ellipsis; white-space: nowrap; }
-      .chain-step.exit { color: #caffdf; border-color: rgba(61,220,151,.3); background: rgba(61,220,151,.12); font-weight: 750; }
-      .chain-arrow { color: #4f6c5d; font-size: 15px; line-height: 1; }
-      ::-webkit-scrollbar { width: 5px; }
-      ::-webkit-scrollbar-track { background: transparent; }
-      ::-webkit-scrollbar-thumb { background: #354d41; border-radius: 6px; }
+      .routes { display: grid; gap: 5px; min-width: 132px; max-width: min(240px, calc(100vw - 32px));
+        padding: 7px; border: 1px solid rgba(104,211,160,.3); border-radius: 13px; cursor: grab;
+        background: linear-gradient(145deg, rgba(15,31,22,.97), rgba(7,18,12,.98));
+        box-shadow: 0 12px 36px rgba(0,0,0,.44), 0 0 18px rgba(61,220,151,.055);
+        backdrop-filter: blur(16px); user-select: none; }
+      .routes:active { cursor: grabbing; }
+      .route { display: grid; grid-template-columns: 6px minmax(0,1fr); align-items: center; gap: 8px;
+        min-height: 26px; padding: 2px 8px; border: 1px solid rgba(148,196,174,.08); border-radius: 8px;
+        color: #dcf8e9; background: rgba(255,255,255,.025);
+        font: 700 12px/1.25 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .route.active { border-color: rgba(61,220,151,.2); background: rgba(61,220,151,.075); }
+      .route.recent { opacity: .5; }
+      .route-dot { width: 5px; height: 5px; border-radius: 50%; background: #3ddc97;
+        box-shadow: 0 0 8px rgba(61,220,151,.8); }
+      .route.recent .route-dot { background: #5d7569; box-shadow: none; }
+      .route-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     `;
 
-    const wrap = el('div', 'wrap');
-    dot = el('button', 'dot');
-    dot.type = 'button';
-    dot.dataset.state = 'recent';
-    dot.title = '展开完整代理链';
-    dot.setAttribute('aria-expanded', 'false');
-
-    panel = el('div', 'panel');
-    const head = el('div', 'head');
-    const brand = el('div', 'brand');
-    brandMarkEl = el('span', 'brand-mark');
-    brand.append(brandMarkEl, el('span', '', '代理链'), countEl = el('span', 'badge', '0 条'));
-    head.appendChild(brand);
-    listEl = el('div', 'list');
-    panel.append(head, listEl);
-
-    wrap.append(panel, dot);
-    shadow.append(style, wrap);
+    routeBox = el('div', 'routes');
+    shadow.append(style, routeBox);
     document.documentElement.appendChild(root);
     root.style.display = 'none';
 
@@ -454,7 +349,6 @@
 
   monitorPageRequests();
   buildUi();
-  refreshFromCache();
   restart();
 
   setInterval(checkPageChange, 700);
