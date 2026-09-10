@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      2.1.0
+// @version      2.1.1
 // @description  页面角落按列表显示当前网页使用的 Mihomo 最终出口
 // @author       droidzx
 // @match        *://*/*
@@ -37,6 +37,7 @@
   let activeRequest = null;
   let retryDelay = 1000;
   let currentPageUrl = location.href;
+  let previousTraffic = new Map();
   let recentRoutes = new Map();
 
   // /connections 是整个旁路由的全局连接表，不按 sourceIP 过滤会混进别的设备。
@@ -156,6 +157,7 @@
   function render(connections) {
     const now = Date.now();
     let order = 0;
+    const nextTraffic = new Map();
     const seenRoutes = new Set();
     for (const item of recentRoutes.values()) item.active = false;
 
@@ -168,6 +170,12 @@
       const rawChain = Array.isArray(c.chains) ? c.chains.filter(Boolean) : [];
       if (!rawChain.length) continue;
       const exit = rawChain[0];
+      const up = Math.max(0, Number(c.upload) || 0);
+      const down = Math.max(0, Number(c.download) || 0);
+      const connectionKey = String(c.id || `${host}|${c.start || ''}|${exit}`);
+      const previous = previousTraffic.get(connectionKey);
+      nextTraffic.set(connectionKey, { up, down });
+      if (previous && up <= previous.up && down <= previous.down) continue;
       if (seenRoutes.has(exit)) continue;
       seenRoutes.add(exit);
       recentRoutes.set(exit, {
@@ -177,6 +185,7 @@
         order: order++,
       });
     }
+    previousTraffic = nextTraffic;
 
     for (const [key, item] of recentRoutes) {
       if (now - item.lastSeenAt >= RECENT_TTL) recentRoutes.delete(key);
@@ -211,6 +220,7 @@
 
   function onFailure() {
     activeRequest = null;
+    previousTraffic = new Map();
     root.style.display = 'none';
     schedule(retryDelay);
     retryDelay = Math.min(retryDelay + 500, 5000);
@@ -264,6 +274,7 @@
     currentPageUrl = location.href;
     // 换页必须清空，否则旧页面的第三方域名会一直被算进「本页」
     observedDomains = new Set([normalizeHost(location.hostname)]);
+    previousTraffic = new Map();
     recentRoutes = new Map();
     render([]);
   }
@@ -318,19 +329,19 @@
     const style = el('style');
     style.textContent = `
       :host { all: initial; position: fixed; right: 16px; bottom: 16px; z-index: 2147483646; }
-      .routes { display: grid; gap: 5px; min-width: 132px; max-width: min(240px, calc(100vw - 32px));
-        padding: 7px; border: 1px solid rgba(104,211,160,.3); border-radius: 13px; cursor: grab;
+      .routes { display: grid; gap: 4px; min-width: 112px; max-width: min(200px, calc(100vw - 32px));
+        padding: 5px; border: 1px solid rgba(104,211,160,.28); border-radius: 11px; cursor: grab;
         background: linear-gradient(145deg, rgba(15,31,22,.97), rgba(7,18,12,.98));
-        box-shadow: 0 12px 36px rgba(0,0,0,.44), 0 0 18px rgba(61,220,151,.055);
+        box-shadow: 0 9px 28px rgba(0,0,0,.4), 0 0 14px rgba(61,220,151,.05);
         backdrop-filter: blur(16px); user-select: none; }
       .routes:active { cursor: grabbing; }
-      .route { display: grid; grid-template-columns: 6px minmax(0,1fr); align-items: center; gap: 8px;
-        min-height: 26px; padding: 2px 8px; border: 1px solid rgba(148,196,174,.08); border-radius: 8px;
+      .route { display: grid; grid-template-columns: 5px minmax(0,1fr); align-items: center; gap: 7px;
+        min-height: 22px; padding: 1px 6px; border: 1px solid rgba(148,196,174,.08); border-radius: 7px;
         color: #dcf8e9; background: rgba(255,255,255,.025);
-        font: 700 12px/1.25 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+        font: 700 11px/1.2 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       .route.active { border-color: rgba(61,220,151,.2); background: rgba(61,220,151,.075); }
       .route.recent { opacity: .5; }
-      .route-dot { width: 5px; height: 5px; border-radius: 50%; background: #3ddc97;
+      .route-dot { width: 4px; height: 4px; border-radius: 50%; background: #3ddc97;
         box-shadow: 0 0 8px rgba(61,220,151,.8); }
       .route.recent .route-dot { background: #5d7569; box-shadow: none; }
       .route-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
