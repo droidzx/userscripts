@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      2.2.1
+// @version      2.2.2
 // @description  页面角落按列表显示当前网页使用的 Mihomo 最终出口
 // @author       droidzx
 // @match        *://*/*
@@ -175,10 +175,7 @@
       const m = c.metadata || {};
       if (sourceIP && m.sourceIP !== sourceIP) continue;
       const host = normalizeHost(m.host || m.sniffHost);
-      // 部分 MATCH 连接只有目标 IP、没有 host；已识别本机 IP 后也应显示其出口。
-      const isMatchConnection = sourceIP && m.sourceIP === sourceIP
-        && String(c.rule || '').toUpperCase() === 'MATCH';
-      if (!isCurrentPageDomain(host) && !isMatchConnection) continue;
+      if (!isCurrentPageDomain(host)) continue;
 
       const rawChain = Array.isArray(c.chains) ? c.chains.filter(Boolean) : [];
       if (!rawChain.length) continue;
