@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      2.2.2
+// @version      2.2.3
 // @description  页面角落按列表显示当前网页使用的 Mihomo 最终出口
 // @author       droidzx
 // @match        *://*/*
@@ -38,6 +38,7 @@
   let retryDelay = 1000;
   let currentPageUrl = location.href;
   let secret = '';
+  let needsTrafficBaseline = false;
   let previousTraffic = new Map();
   let recentRoutes = new Map();
 
@@ -166,6 +167,7 @@
 
   function render(connections) {
     const now = Date.now();
+    const baselineOnly = needsTrafficBaseline;
     let order = 0;
     const nextTraffic = new Map();
     const seenRoutes = new Set();
@@ -185,6 +187,7 @@
       const connectionKey = String(c.id || `${host}|${c.start || ''}|${exit}`);
       const previous = previousTraffic.get(connectionKey);
       nextTraffic.set(connectionKey, { up, down });
+      if (baselineOnly) continue;
       // Mihomo 可能在重连时复用连接 ID，同时把流量计数重置为较小值。
       // 只要计数发生变化就算活跃；只有完全不变才进入 5 秒消失倒计时。
       if (previous && up === previous.up && down === previous.down) continue;
@@ -198,6 +201,13 @@
       });
     }
     previousTraffic = nextTraffic;
+
+    if (baselineOnly) {
+      needsTrafficBaseline = false;
+      recentRoutes = new Map();
+      root.style.display = 'none';
+      return;
+    }
 
     for (const [key, item] of recentRoutes) {
       if (now - item.lastSeenAt >= RECENT_TTL) recentRoutes.delete(key);
@@ -242,7 +252,7 @@
     clearTimeout(pollTimer);
     pollTimer = null;
     if (activeRequest) return;
-    if (document.hidden) { schedule(POLL_INTERVAL); return; }
+    if (document.hidden) return;
 
     activeRequest = GM_xmlhttpRequest({
       method: 'GET',
@@ -281,6 +291,17 @@
     poll();
   }
 
+  function pauseAndClear() {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+    activeRequest?.abort?.();
+    activeRequest = null;
+    previousTraffic = new Map();
+    recentRoutes = new Map();
+    needsTrafficBaseline = true;
+    root.style.display = 'none';
+  }
+
   /* ---------- SPA 换页 ---------- */
 
   function checkPageChange() {
@@ -291,6 +312,7 @@
     previousTraffic = new Map();
     recentRoutes = new Map();
     render([]);
+    needsTrafficBaseline = true;
   }
 
   /* ---------- UI ---------- */
@@ -383,10 +405,8 @@
   window.addEventListener('hashchange', checkPageChange);
   window.addEventListener('online', restart);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) restart();
+    if (document.hidden) pauseAndClear();
+    else restart();
   });
-  window.addEventListener('pagehide', () => {
-    clearTimeout(pollTimer);
-    activeRequest?.abort?.();
-  });
+  window.addEventListener('pagehide', pauseAndClear);
 })();
