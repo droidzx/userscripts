@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Mihomo 监控
 // @namespace    local.droidzx.mihomo
-// @version      2.2.3
+// @version      2.2.4
 // @description  页面角落按列表显示当前网页使用的 Mihomo 最终出口
 // @author       droidzx
 // @match        *://*/*
@@ -10,6 +10,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
+// @grant        GM_registerMenuCommand
 // @connect      192.168.1.50
 // @downloadURL  https://raw.githubusercontent.com/droidzx/userscripts/main/mihomo-dot.user.js
 // @updateURL    https://raw.githubusercontent.com/droidzx/userscripts/main/mihomo-dot.user.js
@@ -33,8 +34,10 @@
   };
 
   let observedDomains = new Set();
+  let pageHost = normalizeHost(location.hostname);
   let pollTimer = null;
   let activeRequest = null;
+  let requestSeq = 0;
   let retryDelay = 1000;
   let currentPageUrl = location.href;
   let secret = '';
@@ -69,13 +72,28 @@
     return host.replace(/:\d+$/, '').replace(/\.$/, '');
   }
 
-  function requestSecret() {
-    const saved = String(GM_getValue(KEYS.secret, '') || '').trim();
-    if (saved) return saved;
+  function promptForSecret() {
     const entered = window.prompt('请输入 Mihomo API Secret\n仅保存在当前浏览器的油猴本地存储中，不会上传到 GitHub。', '');
     const value = String(entered || '').trim();
     if (value) GM_setValue(KEYS.secret, value);
     return value;
+  }
+
+  function requestSecret() {
+    const saved = String(GM_getValue(KEYS.secret, '') || '').trim();
+    return saved || promptForSecret();
+  }
+
+  // 取消输入或鉴权失败后不再轮询，而界面本身是隐藏的，没有地方可点。
+  // 留一个油猴菜单入口，不刷新页面也能把 Secret 补回来。
+  function registerSecretMenu() {
+    if (typeof GM_registerMenuCommand !== 'function') return;
+    GM_registerMenuCommand('设置 Mihomo API Secret', () => {
+      const value = promptForSecret();
+      if (!value) return;
+      secret = value;
+      restart();
+    });
   }
 
   /* ---------- 观察本页用到的域名 ---------- */
@@ -119,8 +137,9 @@
     const h = normalizeHost(host);
     if (!h) return false;
     if (observedDomains.has(h)) return true;
-    for (const d of observedDomains) if (h.endsWith(`.${d}`)) return true;
-    return false;
+    // 后缀匹配只认主文档域名。observedDomains 里混着 CDN、统计、字体等第三方域名，
+    // 拿它们当后缀，会把同一设备其他标签页发往同一家 CDN 的连接算进本页。
+    return Boolean(pageHost) && h.endsWith(`.${pageHost}`);
   }
 
   /* ---------- 本机 IP 识别 ---------- */
@@ -253,6 +272,12 @@
     pollTimer = null;
     if (activeRequest) return;
     if (document.hidden) return;
+    if (!secret) return;
+
+    // abort 之后回调仍可能到达。不认一下序号，旧请求的失败处理会把刚发出的
+    // 新请求引用清掉，并额外排一次轮询，于是出现两个并发请求。
+    const seq = ++requestSeq;
+    const stale = () => seq !== requestSeq;
 
     activeRequest = GM_xmlhttpRequest({
       method: 'GET',
@@ -260,11 +285,12 @@
       headers: { Authorization: `Bearer ${secret}` },
       timeout: 4000,
       onload(res) {
+        if (stale()) return;
         activeRequest = null;
         if (res.status === 401) {
           root.style.display = 'none';
           GM_setValue(KEYS.secret, '');
-          secret = requestSecret();
+          secret = promptForSecret();
           if (secret) schedule(0);
           return;
         }
@@ -278,8 +304,9 @@
           schedule(POLL_INTERVAL);
         } catch (_) { onFailure(); }
       },
-      onerror: onFailure,
-      ontimeout: onFailure,
+      onerror() { if (!stale()) onFailure(); },
+      ontimeout() { if (!stale()) onFailure(); },
+      onabort() { /* 由 restart() / pauseAndClear() 善后 */ },
     });
   }
 
@@ -287,6 +314,7 @@
     clearTimeout(pollTimer);
     activeRequest?.abort?.();
     activeRequest = null;
+    requestSeq += 1;
     retryDelay = 1000;
     poll();
   }
@@ -296,6 +324,7 @@
     pollTimer = null;
     activeRequest?.abort?.();
     activeRequest = null;
+    requestSeq += 1;
     previousTraffic = new Map();
     recentRoutes = new Map();
     needsTrafficBaseline = true;
@@ -308,9 +337,12 @@
     if (location.href === currentPageUrl) return;
     currentPageUrl = location.href;
     // 换页必须清空，否则旧页面的第三方域名会一直被算进「本页」
-    observedDomains = new Set([normalizeHost(location.hostname)]);
+    pageHost = normalizeHost(location.hostname);
+    observedDomains = new Set([pageHost]);
     previousTraffic = new Map();
     recentRoutes = new Map();
+    // 上一页攒下的票不该左右新页面的识别
+    sourceVotes.clear();
     render([]);
     needsTrafficBaseline = true;
   }
@@ -396,9 +428,9 @@
 
   monitorPageRequests();
   buildUi();
+  registerSecretMenu();
   secret = requestSecret();
-  if (!secret) return;
-  restart();
+  if (secret) restart();
 
   setInterval(checkPageChange, 700);
   window.addEventListener('popstate', checkPageChange);
@@ -409,4 +441,6 @@
     else restart();
   });
   window.addEventListener('pagehide', pauseAndClear);
+  // bfcache 返回时 visibilitychange 不一定补发，pageshow 一定会
+  window.addEventListener('pageshow', (ev) => { if (ev.persisted) restart(); });
 })();
